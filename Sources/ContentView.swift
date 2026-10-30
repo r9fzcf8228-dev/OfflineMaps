@@ -2,6 +2,34 @@ import SwiftUI
 import MapKit
 import UniformTypeIdentifiers
 
+struct DocPicker: UIViewControllerRepresentable {
+    let onPick: ([URL]) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.item], asCopy: true)
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ vc: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: ([URL]) -> Void
+        init(onPick: @escaping ([URL]) -> Void) { self.onPick = onPick }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            onPick(urls)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onPick([])
+        }
+    }
+}
+
 struct ContentView: View {
     @State private var overlay: MKTileOverlay?
     @State private var points: [LDKPoint] = []
@@ -51,10 +79,11 @@ struct ContentView: View {
                     }
                 }
             }
-            .fileImporter(isPresented: $showImporter,
-                          allowedContentTypes: [.data],
-                          allowsMultipleSelection: false) { result in
-                handle(result)
+            .sheet(isPresented: $showImporter) {
+                DocPicker { urls in
+                    showImporter = false
+                    handle(urls)
+                }
             }
             .alert(message, isPresented: $showMessage) {
                 Button("OK", role: .cancel) {}
@@ -64,40 +93,31 @@ struct ContentView: View {
     }
 
     func say(_ text: String) {
-        message = text
-        showMessage = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            message = text
+            showMessage = true
+        }
     }
 
-    func handle(_ result: Result<[URL], Error>) {
-        switch result {
-        case .failure(let error):
-            say("فشل الاستيراد: \(error.localizedDescription)")
-        case .success(let urls):
-            guard let url = urls.first else {
-                say("لم يتم اختيار ملف")
-                return
+    func handle(_ urls: [URL]) {
+        guard let url = urls.first else { return }
+        let ext = url.pathExtension.lowercased()
+        let dest = MapStore.shared.dir.appendingPathComponent(url.lastPathComponent)
+        do {
+            if FileManager.default.fileExists(atPath: dest.path) {
+                try FileManager.default.removeItem(at: dest)
             }
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-
-            let ext = url.pathExtension.lowercased()
-            let dest = MapStore.shared.dir.appendingPathComponent(url.lastPathComponent)
-            do {
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try FileManager.default.removeItem(at: dest)
-                }
-                try FileManager.default.copyItem(at: url, to: dest)
-                reload()
-                say("تم استيراد: \(url.lastPathComponent)")
-            } catch {
-                if ext == "ldk" {
-                    let pts = LDKParser.parse(url: url)
-                    points = pts
-                    showMap = true
-                    say("تعذر النسخ (\(error.localizedDescription)). قرأت الملف مباشرة: \(pts.count) نقطة")
-                } else {
-                    say("فشل النسخ: \(error.localizedDescription)")
-                }
+            try FileManager.default.copyItem(at: url, to: dest)
+            reload()
+            say("تم استيراد: \(url.lastPathComponent)")
+        } catch {
+            if ext == "ldk" {
+                let pts = LDKParser.parse(url: url)
+                points = pts
+                showMap = true
+                say("تعذر النسخ. قرأت الملف مباشرة: \(pts.count) نقطة")
+            } else {
+                say("فشل النسخ: \(error.localizedDescription)")
             }
         }
     }
