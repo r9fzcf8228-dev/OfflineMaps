@@ -8,6 +8,8 @@ struct ContentView: View {
     @State private var files: [URL] = []
     @State private var showMap = false
     @State private var showImporter = false
+    @State private var message = ""
+    @State private var showMessage = false
 
     var body: some View {
         NavigationStack {
@@ -37,7 +39,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle(showMap ? "\(points.count) نقطة" : " منتظر يسر خرائطي")
+            .navigationTitle(showMap ? "\(points.count) pts" : "Maps")
             .toolbar {
                 Button("استيراد") { showImporter = true }
                 if showMap {
@@ -51,13 +53,52 @@ struct ContentView: View {
             }
             .fileImporter(isPresented: $showImporter,
                           allowedContentTypes: [.data],
-                          allowsMultipleSelection: true) { result in
-                if case .success(let urls) = result {
-                    urls.forEach { MapStore.shared.importFile($0) }
-                    reload()
-                }
+                          allowsMultipleSelection: false) { result in
+                handle(result)
+            }
+            .alert(message, isPresented: $showMessage) {
+                Button("OK", role: .cancel) {}
             }
             .onAppear(perform: reload)
+        }
+    }
+
+    func say(_ text: String) {
+        message = text
+        showMessage = true
+    }
+
+    func handle(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            say("فشل الاستيراد: \(error.localizedDescription)")
+        case .success(let urls):
+            guard let url = urls.first else {
+                say("لم يتم اختيار ملف")
+                return
+            }
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+
+            let ext = url.pathExtension.lowercased()
+            let dest = MapStore.shared.dir.appendingPathComponent(url.lastPathComponent)
+            do {
+                if FileManager.default.fileExists(atPath: dest.path) {
+                    try FileManager.default.removeItem(at: dest)
+                }
+                try FileManager.default.copyItem(at: url, to: dest)
+                reload()
+                say("تم استيراد: \(url.lastPathComponent)")
+            } catch {
+                if ext == "ldk" {
+                    let pts = LDKParser.parse(url: url)
+                    points = pts
+                    showMap = true
+                    say("تعذر النسخ (\(error.localizedDescription)). قرأت الملف مباشرة: \(pts.count) نقطة")
+                } else {
+                    say("فشل النسخ: \(error.localizedDescription)")
+                }
+            }
         }
     }
 
