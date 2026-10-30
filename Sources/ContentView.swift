@@ -37,7 +37,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle(showMap ? "\(points.count) نقطة" : "خرائطي")
+            .navigationTitle(showMap ? "\(points.count) نقطة" : " منتظر يسر خرائطي")
             .toolbar {
                 Button("استيراد") { showImporter = true }
                 if showMap {
