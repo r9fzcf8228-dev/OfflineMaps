@@ -56,7 +56,7 @@ struct ContentView: View {
                     fileList
                 }
             }
-            .navigationTitle(showMap ? "\(data.points.count) pts" : "Maps")
+            .navigationTitle(showMap ? "\(data.points.count) pts" : "منتظر يسر جبار")
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     if showMap {
