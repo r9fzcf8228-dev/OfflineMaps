@@ -78,7 +78,7 @@ struct ContentView: View {
                     fileList
                 }
             }
-            .navigationTitle(showMap ? "\(store.points.count) pts" : "Maps")
+            .navigationTitle(showMap ? "\(store.points.count) pts" : "صمم بواسطة ضياء محمد جميل ")
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
                     if showMap {
