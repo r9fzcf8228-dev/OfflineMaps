@@ -3,6 +3,9 @@ import SwiftUI
 @main
 struct OfflineMapsApp: App {
     var body: some Scene {
-        WindowGroup { ContentView() }
+        WindowGroup {
+            SplashView() // يبدأ بشاشة الترحيب والأنميشن
+                .preferredColorScheme(.light) // لضمان ظهور الألوان بشكل صحيح
+        }
     }
 }
