@@ -5,7 +5,7 @@ targets:
   OfflineMaps:
     type: application
     platform: iOS
-    deploymentTarget: "27.0"
+    deploymentTarget: "18.0"
     sources: [Sources]
     info:
       path: Sources/Info.plist
@@ -13,4 +13,4 @@ targets:
         UILaunchScreen: {}
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
-        NSLocationWhenInUseUsageDescription: لعرض موقعك على الخريطة
+        NSLocationWhenInUseUsageDescription: "عرض موقعك على الخريطة": لعرض موقعك على الخريطة
