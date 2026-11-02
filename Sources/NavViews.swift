@@ -10,6 +10,7 @@ struct NavTargetSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
     @State private var coordText = ""
+    @State private var server: String = UserDefaults.standard.string(forKey: "routeServer") ?? Routing.defaultServer
 
     private var origin: CLLocationCoordinate2D? {
         if let u = user { return u.coordinate }
@@ -87,6 +88,19 @@ struct NavTargetSheet: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
+                }
+
+                Section("خادم حساب الطرق") {
+                    TextField(Routing.defaultServer, text: $server)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.system(size: 12, design: .monospaced))
+                        .onChange(of: server) { v in
+                            UserDefaults.standard.set(v, forKey: "routeServer")
+                        }
+                    Text("يُحسب الطريق من بيانات OpenStreetMap عبر خادم OSRM التجريبي. للاستخدام الكثيف أو المستمر ضع هنا رابط خادم OSRM خاص بك.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
             }
             .navigationTitle("الملاحة")

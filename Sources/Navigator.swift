@@ -21,6 +21,7 @@ final class NetworkMonitor: ObservableObject {
 
 struct NavStep {
     let text: String
+    let icon: String
     let start: CLLocationCoordinate2D
 }
 
@@ -63,6 +64,7 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var offRoute = 0
     private var lastReroute = Date.distantPast
     private var lastLoc: CLLocation?
+    private var lastDirect: CLLocation?
 
     override init() {
         super.init()
@@ -100,6 +102,7 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
         offRoute = 0
         needsRoute = true
         hasFix = false
+        lastDirect = nil
         status = "جاري تحديد موقعك..."
         routeRevision += 1
         if let loc = manager.location, loc.horizontalAccuracy >= 0 {
@@ -152,54 +155,33 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
     private func requestRoute(from: CLLocationCoordinate2D) {
         guard let t = target else { return }
         status = "جاري حساب الطريق..."
-        let req = MKDirections.Request()
-        req.source = MKMapItem(placemark: MKPlacemark(coordinate: from))
-        req.destination = MKMapItem(placemark: MKPlacemark(coordinate: t))
-        req.transportType = .automobile
-        let d = MKDirections(request: req)
-        directions = d
-        d.calculate { [weak self] resp, _ in
-            DispatchQueue.main.async {
-                guard let self = self, self.active else { return }
-                if let r = resp?.routes.first {
-                    self.applyRoute(r)
-                } else if let loc = self.lastLoc {
-                    self.directMode(from: loc)
-                    self.status = "تعذر حساب الطريق، ملاحة مباشرة"
-                }
+        Routing.route(from: from, to: t) { [weak self] result, info in
+            guard let self = self, self.active else { return }
+            if let r = result {
+                self.apply(r, provider: info)
+            } else if let loc = self.lastLoc {
+                self.directMode(from: loc)
+                self.status = "تعذر حساب الطريق: \(info)"
             }
         }
     }
 
-    private func coords(of pl: MKPolyline) -> [CLLocationCoordinate2D] {
-        var cs = [CLLocationCoordinate2D](repeating: CLLocationCoordinate2D(), count: pl.pointCount)
-        if pl.pointCount > 0 {
-            pl.getCoordinates(&cs, range: NSRange(location: 0, length: pl.pointCount))
-        }
-        return cs
-    }
-
-    private func applyRoute(_ r: MKRoute) {
-        let cs = coords(of: r.polyline)
-        if cs.count < 2 { return }
-        routeCoords = cs
+    private func apply(_ r: RouteResult, provider: String) {
+        if r.coords.count < 2 { return }
+        routeCoords = r.coords
         var c: [Double] = [0]
         var acc = 0.0
-        for i in 1..<cs.count {
-            acc += Coords.distance(cs[i - 1], cs[i])
+        for i in 1..<r.coords.count {
+            acc += Coords.distance(r.coords[i - 1], r.coords[i])
             c.append(acc)
         }
         cum = c
         routeTotal = acc
-        expected = r.expectedTravelTime
+        expected = r.duration
 
         var list: [NavStep] = []
-        for s in r.steps {
-            if s.instructions.isEmpty { continue }
-            let sc = coords(of: s.polyline)
-            if let first = sc.first {
-                list.append(NavStep(text: s.instructions, start: first))
-            }
+        for st in r.steps {
+            list.append(NavStep(text: st.text, icon: st.icon, start: st.start))
         }
         steps = list
         stepIndex = 0
@@ -208,9 +190,10 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
         progressIndex = 0
         offRoute = 0
         roadMode = true
-        status = "ملاحة على الطرق"
+        status = "ملاحة على الطرق (\(provider))"
         instruction = steps.first?.text ?? ""
-        maneuver = Navigator.icon(for: instruction)
+        maneuver = steps.first?.icon ?? "arrow.up"
+        nextInstruction = ""
         routeRevision += 1
         if let loc = lastLoc { update(loc) }
     }
@@ -260,8 +243,15 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
             let v = loc.speed
             eta = v > 1 ? distance / v : 0
             if !roadMode {
-                routeCoords = [here, t]
-                routeRevision += 1
+                var needUpdate = true
+                if let ld = lastDirect, Coords.distance(ld.coordinate, here) < 10 {
+                    needUpdate = false
+                }
+                if needUpdate {
+                    lastDirect = loc
+                    routeCoords = [here, t]
+                    routeRevision += 1
+                }
             }
         }
     }
@@ -308,10 +298,10 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
             let d = Coords.distance(here, s.start)
             stepDistance = d
             instruction = s.text
-            maneuver = Navigator.icon(for: s.text)
+            maneuver = s.icon
             if stepIndex + 1 < steps.count {
                 nextInstruction = steps[stepIndex + 1].text
-                nextManeuver = Navigator.icon(for: nextInstruction)
+                nextManeuver = steps[stepIndex + 1].icon
             } else {
                 nextInstruction = ""
             }

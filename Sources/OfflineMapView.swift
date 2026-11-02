@@ -334,6 +334,8 @@ struct OfflineMapView: UIViewRepresentable {
         var deviceHeading: Double = 0
         var camHeading: Double = 0
         var lastLocation: CLLocation?
+        var lastCamTime = Date.distantPast
+        var lastCamCoord: CLLocationCoordinate2D?
 
         override init() {
             super.init()
@@ -357,8 +359,11 @@ struct OfflineMapView: UIViewRepresentable {
 
         func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
             let h = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
-            deviceHeading = h
-            updateArrow()
+            let delta = ((h - deviceHeading + 540).truncatingRemainder(dividingBy: 360)) - 180
+            if abs(delta) > 2 {
+                deviceHeading = (deviceHeading + delta * 0.3 + 360).truncatingRemainder(dividingBy: 360)
+                updateArrow()
+            }
         }
 
         func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
@@ -367,7 +372,7 @@ struct OfflineMapView: UIViewRepresentable {
 
         func arrowAngle(_ map: MKMapView) -> Double {
             var h = deviceHeading
-            if let loc = lastLocation, loc.speed > 1.5, loc.course >= 0 {
+            if let loc = lastLocation, loc.speed > 1.2, loc.course >= 0 {
                 h = loc.course
             }
             return (h - map.camera.heading) * Double.pi / 180
@@ -393,27 +398,46 @@ struct OfflineMapView: UIViewRepresentable {
         }
 
         func followCamera(_ map: MKMapView, _ loc: CLLocation) {
-            let speed = max(0, loc.speed)
-            var dist = 380 + speed * 22
-            if dist > 1500 { dist = 1500 }
-            if near && dist > 300 { dist = 300 }
-
-            var targetHeading = loc.course
-            if speed < 1.5 || loc.course < 0 {
-                targetHeading = deviceHeading
+            // تقليل التحديثات: لا نحرّك الكاميرا إلا بعد ثانية أو بعد تحرك أكثر من 4 أمتار
+            let now = Date()
+            if let lc = lastCamCoord,
+               now.timeIntervalSince(lastCamTime) < 0.9,
+               Coords.distance(lc, loc.coordinate) < 4 {
+                return
             }
-            let delta = ((targetHeading - camHeading + 540).truncatingRemainder(dividingBy: 360)) - 180
-            camHeading = (camHeading + delta * 0.5 + 360).truncatingRemainder(dividingBy: 360)
+            lastCamTime = now
+            lastCamCoord = loc.coordinate
 
-            let ahead = Coordinator.offset(loc.coordinate, meters: dist * 0.3, bearing: camHeading)
-            let cam = MKMapCamera(lookingAtCenter: ahead, fromDistance: dist, pitch: 55, heading: camHeading)
+            let speed = max(0, loc.speed)
+            var dist = 300 + speed * 18
+            if dist > 1200 { dist = 1200 }
+            if near && dist > 260 { dist = 260 }
+
+            // الاتجاه يتبع حركتك الفعلية فقط، ولا يدور مع اهتزاز البوصلة عند الوقوف
+            if speed >= 1.2 && loc.course >= 0 {
+                let delta = ((loc.course - camHeading + 540).truncatingRemainder(dividingBy: 360)) - 180
+                if abs(delta) > 3 {
+                    camHeading = (camHeading + delta * 0.3 + 360).truncatingRemainder(dividingBy: 360)
+                }
+            }
+
+            // إزاحة صغيرة للأمام حتى يبقى السهم في الثلث الأسفل وفوق الشريط السفلي
+            let ahead = Coordinator.offset(loc.coordinate, meters: dist * 0.12, bearing: camHeading)
+            let cam = MKMapCamera(lookingAtCenter: ahead, fromDistance: dist, pitch: 50, heading: camHeading)
             map.setCamera(cam, animated: true)
         }
 
         func beginFollow(_ map: MKMapView) {
             map.setUserTrackingMode(.none, animated: false)
             camHeading = map.camera.heading
+            lastCamCoord = nil
+            lastCamTime = Date.distantPast
             if let loc = map.userLocation.location {
+                if loc.course >= 0 && loc.speed >= 1.2 {
+                    camHeading = loc.course
+                } else {
+                    camHeading = deviceHeading
+                }
                 followCamera(map, loc)
             }
         }
@@ -535,32 +559,20 @@ struct OfflineMapView: UIViewRepresentable {
             if followRoads {
                 busy = true
                 publish()
-                let req = MKDirections.Request()
-                req.source = MKMapItem(placemark: MKPlacemark(coordinate: last))
-                req.destination = MKMapItem(placemark: MKPlacemark(coordinate: c))
-                req.transportType = .automobile
-                let d = MKDirections(request: req)
-                directions = d
-                d.calculate { [weak self] resp, err in
-                    DispatchQueue.main.async {
-                        guard let self = self else { return }
-                        self.busy = false
-                        if let r = resp?.routes.first {
-                            let pl = r.polyline
-                            var cs = [CLLocationCoordinate2D](repeating: CLLocationCoordinate2D(),
-                                                              count: pl.pointCount)
-                            pl.getCoordinates(&cs, range: NSRange(location: 0, length: pl.pointCount))
-                            self.taps.append(c)
-                            self.legs.append(cs)
-                            self.legTimes.append(r.expectedTravelTime)
-                        } else {
-                            self.taps.append(c)
-                            self.legs.append([last, c])
-                            self.legTimes.append(0)
-                            self.onPathMessage("تعذر حساب الطريق (يلزم اتصال بالإنترنت). رُسم خط مستقيم.")
-                        }
-                        self.refreshPath()
+                Routing.route(from: last, to: c) { [weak self] result, info in
+                    guard let self = self else { return }
+                    self.busy = false
+                    if let r = result {
+                        self.taps.append(c)
+                        self.legs.append(r.coords)
+                        self.legTimes.append(r.duration)
+                    } else {
+                        self.taps.append(c)
+                        self.legs.append([last, c])
+                        self.legTimes.append(0)
+                        self.onPathMessage("تعذر حساب الطريق: \(info). رُسم خط مستقيم.")
                     }
+                    self.refreshPath()
                 }
             } else {
                 taps.append(c)

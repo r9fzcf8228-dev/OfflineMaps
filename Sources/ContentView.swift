@@ -217,7 +217,9 @@ struct ContentView: View {
                            navFollow: navFollowing,
                            navNear: navigator.roadMode && navigator.stepDistance < 180,
                            controller: controller,
-                           onCenter: { c in center = c },
+                           onCenter: { c in
+                               if !navigator.active { center = c }
+                           },
                            onEditPoint: { id in openEditor(id) },
                            onMovePoint: { id, c in
                                store.move(id, to: c)
