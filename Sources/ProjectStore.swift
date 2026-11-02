@@ -9,9 +9,10 @@ struct MapPoint: Identifiable, Codable {
     var lon: Double
     var color: String
     var symbol: String
+    var pinned: Bool
 
     init(id: UUID = UUID(), name: String, note: String = "", lat: Double, lon: Double,
-         color: String = "red", symbol: String = "") {
+         color: String = "red", symbol: String = "", pinned: Bool = false) {
         self.id = id
         self.name = name
         self.note = note
@@ -19,10 +20,11 @@ struct MapPoint: Identifiable, Codable {
         self.lon = lon
         self.color = color
         self.symbol = symbol
+        self.pinned = pinned
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, note, lat, lon, color, symbol
+        case id, name, note, lat, lon, color, symbol, pinned
     }
 
     init(from decoder: Decoder) throws {
@@ -34,6 +36,7 @@ struct MapPoint: Identifiable, Codable {
         lon = try c.decode(Double.self, forKey: .lon)
         color = (try? c.decode(String.self, forKey: .color)) ?? "red"
         symbol = (try? c.decode(String.self, forKey: .symbol)) ?? ""
+        pinned = (try? c.decode(Bool.self, forKey: .pinned)) ?? false
     }
 
     var coordinate: CLLocationCoordinate2D {
@@ -147,10 +150,12 @@ final class ProjectStore: ObservableObject {
     }
 
     func upsert(_ p: MapPoint) {
-        if let i = points.firstIndex(where: { $0.id == p.id }) {
-            points[i] = p
+        var q = p
+        q.pinned = true
+        if let i = points.firstIndex(where: { $0.id == q.id }) {
+            points[i] = q
         } else {
-            points.append(p)
+            points.append(q)
         }
         changed()
     }
@@ -164,6 +169,7 @@ final class ProjectStore: ObservableObject {
         if let i = points.firstIndex(where: { $0.id == id }) {
             points[i].lat = c.latitude
             points[i].lon = c.longitude
+            points[i].pinned = true
             changed()
         }
     }

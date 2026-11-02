@@ -77,6 +77,8 @@ struct ContentView: View {
     @State private var showTracks = true
     @State private var hybrid = false
     @State private var showCrosshair = true
+    @State private var clusterPoints = true
+    @State private var navFollowing = true
     @State private var center: CLLocationCoordinate2D?
 
     @State private var editMode = false
@@ -201,24 +203,32 @@ struct ContentView: View {
                            showAreas: showAreas,
                            showLines: showLines,
                            showTracks: showTracks,
+                           clusterPoints: clusterPoints,
                            mapType: hybrid ? .hybrid : .standard,
                            editMode: editMode,
                            pathMode: pathMode,
                            followRoads: followRoads,
                            navRoute: navigator.routeCoords,
                            navRevision: navigator.routeRevision,
+                           navProgress: navigator.progressIndex,
                            navTarget: navigator.active ? navigator.target : nil,
                            navRoad: navigator.roadMode,
                            navActive: navigator.active,
+                           navFollow: navFollowing,
+                           navNear: navigator.roadMode && navigator.stepDistance < 180,
                            controller: controller,
                            onCenter: { c in center = c },
                            onEditPoint: { id in openEditor(id) },
-                           onMovePoint: { id, c in store.move(id, to: c) },
+                           onMovePoint: { id, c in
+                               store.move(id, to: c)
+                               Haptics.success()
+                           },
                            onLongPress: { c in newPoint(at: c) },
                            onPath: { info in pathInfo = info },
-                           onPathMessage: { m in say(m) })
+                           onPathMessage: { m in say(m) },
+                           onFollowChange: { f in navFollowing = f })
                 .ignoresSafeArea()
-            if showCrosshair {
+            if showCrosshair && !navigator.active {
                 crosshair
             }
         }
@@ -261,6 +271,7 @@ struct ContentView: View {
             Divider()
             Toggle("قمر صناعي", isOn: $hybrid)
             Toggle("الإحداثيات", isOn: $showCrosshair)
+            Toggle("تجميع النقاط القريبة", isOn: $clusterPoints)
             Divider()
             Button("الخرائط دون إنترنت") { sheet = .offlineMaps }
             Button("استيراد ملف") { sheet = .importer }
@@ -300,13 +311,19 @@ struct ContentView: View {
         VStack(spacing: 8) {
             HStack(spacing: 10) {
                 roundButton("chevron.backward") { goHome() }
-                if showCrosshair, let c = center {
+                if showCrosshair && !navigator.active, let c = center {
                     hudCapsule(c)
                 }
                 Spacer(minLength: 0)
                 mapMenu
             }
             .padding(.horizontal, 12)
+
+            if navigator.active {
+                NavBanner(nav: navigator)
+                    .padding(.horizontal, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
 
             if let b = banner {
                 Text(b)
@@ -334,6 +351,7 @@ struct ContentView: View {
             }
         }
         .padding(.top, 4)
+        .animation(.spring(response: 0.45, dampingFraction: 0.85), value: navigator.active)
     }
 
     // MARK: - الأسفل
@@ -341,17 +359,25 @@ struct ContentView: View {
     private var bottomPanel: some View {
         VStack(spacing: 8) {
             if navigator.active {
-                NavHUD(nav: navigator, online: net.online) {
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
-                        navigator.stop()
-                    }
-                }
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else if pathMode || pathInfo.count > 0 {
-                pathPanel
+                NavBottomBar(nav: navigator,
+                             following: navFollowing,
+                             onRecenter: {
+                                 navFollowing = true
+                                 controller.recenterNow()
+                             },
+                             onStop: {
+                                 withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                                     navigator.stop()
+                                 }
+                             })
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else {
+                if pathMode || pathInfo.count > 0 {
+                    pathPanel
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                toolbar
             }
-            toolbar
         }
         .padding(.horizontal, 10)
         .padding(.bottom, 4)
@@ -501,6 +527,7 @@ struct ContentView: View {
     private func startNav(_ c: CLLocationCoordinate2D, _ name: String) {
         pathMode = false
         editMode = false
+        navFollowing = true
         navigator.start(to: c, name: name, online: net.online)
         Haptics.success()
     }

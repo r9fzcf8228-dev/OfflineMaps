@@ -100,16 +100,100 @@ struct NavTargetSheet: View {
     }
 }
 
-struct NavHUD: View {
+struct NavBanner: View {
     @ObservedObject var nav: Navigator
-    let online: Bool
-    let onStop: () -> Void
 
     private var delta: Double {
         var d = nav.bearing - nav.heading
         while d > 180 { d -= 360 }
         while d < -180 { d += 360 }
         return d
+    }
+
+    private var bigDistance: String {
+        if nav.arrived { return "وصلت" }
+        if nav.roadMode { return Coords.formatDistance(nav.stepDistance) }
+        return Coords.formatDistance(nav.distance)
+    }
+
+    private var mainText: String {
+        if nav.arrived { return nav.targetName }
+        if nav.roadMode && !nav.instruction.isEmpty { return nav.instruction }
+        if nav.hasFix { return nav.targetName }
+        return "جاري تحديد موقعك..."
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Theme.accentGradient)
+                    if nav.arrived {
+                        Image(systemName: "flag.checkered")
+                            .font(.system(size: 32, weight: .bold))
+                            .foregroundColor(Color.black.opacity(0.8))
+                    } else if nav.roadMode {
+                        Image(systemName: nav.maneuver)
+                            .font(.system(size: 34, weight: .bold))
+                            .foregroundColor(Color.black.opacity(0.8))
+                    } else {
+                        Image(systemName: "location.north.fill")
+                            .font(.system(size: 32, weight: .bold))
+                            .foregroundColor(Color.black.opacity(0.8))
+                            .rotationEffect(.degrees(delta))
+                            .animation(.easeOut(duration: 0.3), value: delta)
+                    }
+                }
+                .frame(width: 68, height: 68)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(bigDistance)
+                        .font(.system(size: 30, weight: .heavy, design: .rounded))
+                        .foregroundColor(.white)
+                        .contentTransition(.numericText())
+                        .animation(.easeInOut(duration: 0.3), value: bigDistance)
+                    Text(mainText)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(Color.white.opacity(0.85))
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 0)
+            }
+
+            if nav.roadMode && !nav.nextInstruction.isEmpty && !nav.arrived {
+                HStack(spacing: 8) {
+                    Text("ثم")
+                    Image(systemName: nav.nextManeuver)
+                    Text(nav.nextInstruction)
+                        .lineLimit(1)
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(Color.white.opacity(0.7))
+            }
+
+            if !nav.roadMode && !nav.arrived && !nav.status.isEmpty {
+                Text(nav.status)
+                    .font(.system(size: 11))
+                    .foregroundColor(Color.white.opacity(0.65))
+            }
+        }
+        .padding(12)
+        .glass(20)
+    }
+}
+
+struct NavBottomBar: View {
+    @ObservedObject var nav: Navigator
+    let following: Bool
+    let onRecenter: () -> Void
+    let onStop: () -> Void
+
+    private var arrivalText: String {
+        if nav.eta <= 0 { return "—" }
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f.string(from: Date().addingTimeInterval(nav.eta))
     }
 
     private var remainText: String {
@@ -122,106 +206,66 @@ struct NavHUD: View {
         return "—"
     }
 
-    private var bearingText: String {
-        let deg = String(format: "%.0f", nav.bearing)
-        return "\(deg)° / \(Coords.mils(nav.bearing)) mil"
+    private var speedText: String {
+        return String(Int((nav.speed * 3.6).rounded()))
+    }
+
+    private func circleButton(_ icon: String, _ color: Color, _ action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.tap()
+            action()
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .bold))
+                .foregroundColor(.white)
+                .frame(width: 44, height: 44)
+                .background(color, in: Circle())
+        }
+        .buttonStyle(PressableStyle())
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 14) {
-                ZStack {
-                    Circle()
-                        .stroke(Theme.accent.opacity(0.45), lineWidth: 2)
-                        .frame(width: 66, height: 66)
-                    Circle()
-                        .fill(Theme.accent.opacity(0.12))
-                        .frame(width: 66, height: 66)
-                    Image(systemName: "location.north.fill")
-                        .font(.system(size: 28, weight: .bold))
-                        .foregroundColor(Theme.accent)
-                        .rotationEffect(.degrees(delta))
-                        .animation(.easeOut(duration: 0.3), value: delta)
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(remainText)
-                        .font(.system(size: 28, weight: .heavy, design: .rounded))
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(Color.white.opacity(0.12))
+                    .overlay(Circle().stroke(Theme.accent.opacity(0.7), lineWidth: 2))
+                VStack(spacing: 0) {
+                    Text(speedText)
+                        .font(.system(size: 20, weight: .heavy, design: .rounded))
                         .foregroundColor(.white)
                         .contentTransition(.numericText())
-                        .animation(.easeInOut(duration: 0.3), value: remainText)
-                    Text(nav.targetName)
-                        .font(.system(size: 13))
-                        .foregroundColor(Color.white.opacity(0.7))
-                        .lineLimit(1)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 4) {
-                    Label(etaText, systemImage: "clock")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white)
-                    Text(bearingText)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(Color.white.opacity(0.7))
+                        .animation(.easeInOut(duration: 0.3), value: speedText)
+                    Text("km/h")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundColor(Color.white.opacity(0.6))
                 }
             }
+            .frame(width: 58, height: 58)
 
-            if nav.arrived {
-                Label("وصلت إلى الهدف", systemImage: "checkmark.seal.fill")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundColor(.green)
-                    .transition(.scale.combined(with: .opacity))
-            } else if nav.roadMode && !nav.instruction.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: "arrow.turn.up.right")
-                        .foregroundColor(Theme.accent)
-                    Text(nav.instruction)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
-                        .lineLimit(2)
-                    Spacer()
-                    Text(Coords.formatDistance(nav.stepDistance))
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundColor(Theme.accent)
-                }
-            } else {
-                Text(nav.hasFix ? nav.status : "جاري تحديد موقعك...")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(arrivalText)
+                    .font(.system(size: 24, weight: .heavy, design: .rounded))
+                    .foregroundColor(.white)
+                Text(remainText + "  •  " + etaText)
                     .font(.system(size: 12))
                     .foregroundColor(Color.white.opacity(0.7))
             }
 
-            if !online && !nav.roadMode {
-                Label("بدون إنترنت: السهم يشير إلى الهدف مباشرة", systemImage: "wifi.slash")
-                    .font(.system(size: 11))
-                    .foregroundColor(Color.orange)
-            }
+            Spacer(minLength: 0)
 
-            HStack(spacing: 10) {
-                Button {
-                    Haptics.tap()
-                    nav.voice.toggle()
-                } label: {
-                    Image(systemName: nav.voice ? "speaker.wave.2.fill" : "speaker.slash.fill")
-                        .frame(width: 44, height: 36)
-                        .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .foregroundColor(.white)
-                }
-                .buttonStyle(PressableStyle())
-
-                Button {
-                    Haptics.success()
-                    onStop()
-                } label: {
-                    Label("إنهاء الملاحة", systemImage: "xmark.circle.fill")
-                        .font(.system(size: 14, weight: .bold))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 36)
-                        .background(Color.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .foregroundColor(.white)
-                }
-                .buttonStyle(PressableStyle())
+            if !following {
+                circleButton("location.fill", Theme.accentDeep) { onRecenter() }
+                    .transition(.scale.combined(with: .opacity))
             }
+            circleButton(nav.voice ? "speaker.wave.2.fill" : "speaker.slash.fill",
+                         Color.white.opacity(0.18)) {
+                nav.voice.toggle()
+            }
+            circleButton("xmark", Color.red.opacity(0.9)) { onStop() }
         }
-        .padding(14)
-        .glass(22)
+        .padding(12)
+        .glass(26)
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: following)
     }
 }

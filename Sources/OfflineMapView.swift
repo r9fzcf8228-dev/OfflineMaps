@@ -19,6 +19,7 @@ final class MapController: ObservableObject {
     func clearPath() { coordinator?.clearPath() }
     func pathCoords() -> [CLLocationCoordinate2D] { return coordinator?.pathCoords ?? [] }
     func goTo(_ c: CLLocationCoordinate2D) { coordinator?.goTo(c) }
+    func recenterNow() { coordinator?.recenter() }
 
     func userLocation() -> CLLocation? {
         return coordinator?.map?.userLocation.location
@@ -40,6 +41,7 @@ final class PointAnnotation: MKPointAnnotation {
     var colorName = ""
     var symbol = ""
     var note = ""
+    var pinned = false
 }
 
 final class PathVertex: MKPointAnnotation {}
@@ -57,15 +59,19 @@ struct OfflineMapView: UIViewRepresentable {
     let showAreas: Bool
     let showLines: Bool
     let showTracks: Bool
+    let clusterPoints: Bool
     let mapType: MKMapType
     let editMode: Bool
     let pathMode: Bool
     let followRoads: Bool
     let navRoute: [CLLocationCoordinate2D]
     let navRevision: Int
+    let navProgress: Int
     let navTarget: CLLocationCoordinate2D?
     let navRoad: Bool
     let navActive: Bool
+    let navFollow: Bool
+    let navNear: Bool
     let controller: MapController
     let onCenter: (CLLocationCoordinate2D) -> Void
     let onEditPoint: (UUID) -> Void
@@ -73,6 +79,7 @@ struct OfflineMapView: UIViewRepresentable {
     let onLongPress: (CLLocationCoordinate2D) -> Void
     let onPath: (PathInfo) -> Void
     let onPathMessage: (String) -> Void
+    let onFollowChange: (Bool) -> Void
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView()
@@ -82,10 +89,12 @@ struct OfflineMapView: UIViewRepresentable {
         map.delegate = context.coordinator
         context.coordinator.map = map
         context.coordinator.lm.requestWhenInUseAuthorization()
+        context.coordinator.startHeading()
 
         let press = UILongPressGestureRecognizer(target: context.coordinator,
                                                  action: #selector(Coordinator.longPress(_:)))
         press.minimumPressDuration = 0.7
+        press.cancelsTouchesInView = false
         press.delegate = context.coordinator
         map.addGestureRecognizer(press)
 
@@ -96,9 +105,22 @@ struct OfflineMapView: UIViewRepresentable {
 
         let tap = UITapGestureRecognizer(target: context.coordinator,
                                          action: #selector(Coordinator.handleTap(_:)))
+        tap.cancelsTouchesInView = false
         tap.delegate = context.coordinator
         tap.require(toFail: dbl)
         map.addGestureRecognizer(tap)
+
+        let pan = UIPanGestureRecognizer(target: context.coordinator,
+                                         action: #selector(Coordinator.userGesture(_:)))
+        pan.cancelsTouchesInView = false
+        pan.delegate = context.coordinator
+        map.addGestureRecognizer(pan)
+
+        let pinch = UIPinchGestureRecognizer(target: context.coordinator,
+                                             action: #selector(Coordinator.userGesture(_:)))
+        pinch.cancelsTouchesInView = false
+        pinch.delegate = context.coordinator
+        map.addGestureRecognizer(pinch)
 
         let btn = MKUserTrackingButton(mapView: map)
         btn.translatesAutoresizingMaskIntoConstraints = false
@@ -119,9 +141,14 @@ struct OfflineMapView: UIViewRepresentable {
         c.onLongPress = onLongPress
         c.onPath = onPath
         c.onPathMessage = onPathMessage
+        c.onFollowChange = onFollowChange
         c.pathMode = pathMode
         c.followRoads = followRoads
         c.editMode = editMode
+        c.clusterPoints = clusterPoints
+        c.navActive = navActive
+        c.following = navFollow
+        c.near = navNear
         controller.coordinator = c
         map.mapType = mapType
 
@@ -132,7 +159,7 @@ struct OfflineMapView: UIViewRepresentable {
             c.lastOverlay = overlay
         }
 
-        let key = "\(revision)|\(showPoints)|\(showAreas)|\(showLines)|\(showTracks)|\(editMode)"
+        let key = "\(revision)|\(showPoints)|\(showAreas)|\(showLines)|\(showTracks)|\(editMode)|\(clusterPoints)"
         if c.lastKey != key {
             map.removeOverlays(c.shapeOverlays)
             let old = map.annotations.filter { $0 is PointAnnotation }
@@ -179,6 +206,7 @@ struct OfflineMapView: UIViewRepresentable {
                     a.colorName = p.color
                     a.symbol = p.symbol
                     a.note = p.note
+                    a.pinned = p.pinned
                     anns.append(a)
                 }
                 map.addAnnotations(anns)
@@ -186,7 +214,7 @@ struct OfflineMapView: UIViewRepresentable {
             c.lastKey = key
         }
 
-        // الملاحة: الهدف ووضع التتبع
+        // الملاحة: علامة الهدف
         var tkey = ""
         if navActive, let t = navTarget {
             tkey = "\(t.latitude),\(t.longitude)"
@@ -205,27 +233,47 @@ struct OfflineMapView: UIViewRepresentable {
             }
             c.navTargetKey = tkey
         }
+
+        // الملاحة: بدء/إنهاء كاميرا التتبع
         if c.lastNavActive != navActive {
-            map.setUserTrackingMode(navActive ? .followWithHeading : .none, animated: true)
             c.lastNavActive = navActive
+            if navActive {
+                c.beginFollow(map)
+            } else {
+                c.endFollow(map)
+            }
         }
 
-        // الملاحة: خط الطريق
-        if c.lastNavRevision != navRevision {
+        // الملاحة: خط الطريق (الجزء المتبقي فقط)
+        if c.lastNavRevision != navRevision || c.lastNavProgress != navProgress {
             if let l = c.navLine {
                 map.removeOverlay(l)
                 c.navLine = nil
             }
+            if let l = c.navCasing {
+                map.removeOverlay(l)
+                c.navCasing = nil
+            }
             if navActive {
                 var cs = navRoute
+                if navRoad && navProgress > 0 && navProgress < cs.count - 1 {
+                    cs = Array(cs[navProgress...])
+                }
                 if cs.count >= 2 {
+                    var cs2 = cs
+                    c.navRoad = navRoad
+                    if navRoad {
+                        let casing = MKPolyline(coordinates: &cs2, count: cs2.count)
+                        c.navCasing = casing
+                        map.addOverlay(casing, level: .aboveLabels)
+                    }
                     let l = MKPolyline(coordinates: &cs, count: cs.count)
                     c.navLine = l
-                    c.navRoad = navRoad
                     map.addOverlay(l, level: .aboveLabels)
                 }
             }
             c.lastNavRevision = navRevision
+            c.lastNavProgress = navProgress
         }
 
         if controller.needsFit && (!points.isEmpty || !shapes.isEmpty) {
@@ -236,7 +284,7 @@ struct OfflineMapView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    final class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
+    final class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate, CLLocationManagerDelegate {
         struct Style {
             let color: UIColor
             let dashed: Bool
@@ -251,6 +299,7 @@ struct OfflineMapView: UIViewRepresentable {
         var onLongPress: (CLLocationCoordinate2D) -> Void = { _ in }
         var onPath: (PathInfo) -> Void = { _ in }
         var onPathMessage: (String) -> Void = { _ in }
+        var onFollowChange: (Bool) -> Void = { _ in }
 
         var lastOverlay: MKTileOverlay?
         var lastKey = ""
@@ -259,6 +308,7 @@ struct OfflineMapView: UIViewRepresentable {
         var pathMode = false
         var followRoads = false
         var editMode = false
+        var clusterPoints = true
 
         var taps: [CLLocationCoordinate2D] = []
         var legs: [[CLLocationCoordinate2D]] = []
@@ -270,16 +320,131 @@ struct OfflineMapView: UIViewRepresentable {
         var target: TargetAnnotation?
 
         var navLine: MKPolyline?
+        var navCasing: MKPolyline?
         var navPin: NavTargetAnnotation?
         var navRoad = false
         var navTargetKey = ""
+        var navActive = false
+        var following = true
+        var near = false
         var lastNavActive = false
         var lastNavRevision = -1
+        var lastNavProgress = -1
+
+        var deviceHeading: Double = 0
+        var camHeading: Double = 0
+        var lastLocation: CLLocation?
+
+        override init() {
+            super.init()
+            lm.delegate = self
+        }
 
         var pathCoords: [CLLocationCoordinate2D] {
             var all: [CLLocationCoordinate2D] = []
             for l in legs { all.append(contentsOf: l) }
             return all
+        }
+
+        // MARK: البوصلة والسهم
+
+        func startHeading() {
+            if CLLocationManager.headingAvailable() {
+                lm.headingFilter = 2
+                lm.startUpdatingHeading()
+            }
+        }
+
+        func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+            let h = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
+            deviceHeading = h
+            updateArrow()
+        }
+
+        func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+            startHeading()
+        }
+
+        func arrowAngle(_ map: MKMapView) -> Double {
+            var h = deviceHeading
+            if let loc = lastLocation, loc.speed > 1.5, loc.course >= 0 {
+                h = loc.course
+            }
+            return (h - map.camera.heading) * Double.pi / 180
+        }
+
+        func updateArrow() {
+            guard let map = map, let v = map.view(for: map.userLocation) else { return }
+            v.transform = CGAffineTransform(rotationAngle: CGFloat(arrowAngle(map)))
+        }
+
+        // MARK: كاميرا التتبع (على طريقة Waze)
+
+        static func offset(_ c: CLLocationCoordinate2D, meters: Double, bearing: Double) -> CLLocationCoordinate2D {
+            let r = 6371000.0
+            let br = bearing * Double.pi / 180
+            let lat1 = c.latitude * Double.pi / 180
+            let lon1 = c.longitude * Double.pi / 180
+            let dr = meters / r
+            let lat2 = asin(sin(lat1) * cos(dr) + cos(lat1) * sin(dr) * cos(br))
+            let lon2 = lon1 + atan2(sin(br) * sin(dr) * cos(lat1), cos(dr) - sin(lat1) * sin(lat2))
+            return CLLocationCoordinate2D(latitude: lat2 * 180 / Double.pi,
+                                          longitude: lon2 * 180 / Double.pi)
+        }
+
+        func followCamera(_ map: MKMapView, _ loc: CLLocation) {
+            let speed = max(0, loc.speed)
+            var dist = 380 + speed * 22
+            if dist > 1500 { dist = 1500 }
+            if near && dist > 300 { dist = 300 }
+
+            var targetHeading = loc.course
+            if speed < 1.5 || loc.course < 0 {
+                targetHeading = deviceHeading
+            }
+            let delta = ((targetHeading - camHeading + 540).truncatingRemainder(dividingBy: 360)) - 180
+            camHeading = (camHeading + delta * 0.5 + 360).truncatingRemainder(dividingBy: 360)
+
+            let ahead = Coordinator.offset(loc.coordinate, meters: dist * 0.3, bearing: camHeading)
+            let cam = MKMapCamera(lookingAtCenter: ahead, fromDistance: dist, pitch: 55, heading: camHeading)
+            map.setCamera(cam, animated: true)
+        }
+
+        func beginFollow(_ map: MKMapView) {
+            map.setUserTrackingMode(.none, animated: false)
+            camHeading = map.camera.heading
+            if let loc = map.userLocation.location {
+                followCamera(map, loc)
+            }
+        }
+
+        func endFollow(_ map: MKMapView) {
+            let cam = MKMapCamera(lookingAtCenter: map.centerCoordinate,
+                                  fromDistance: map.camera.centerCoordinateDistance,
+                                  pitch: 0, heading: 0)
+            map.setCamera(cam, animated: true)
+        }
+
+        func recenter() {
+            guard let map = map, let loc = map.userLocation.location else { return }
+            following = true
+            followCamera(map, loc)
+        }
+
+        @objc func userGesture(_ g: UIGestureRecognizer) {
+            if g.state == .began && navActive && following {
+                following = false
+                onFollowChange(false)
+            }
+        }
+
+        func mapView(_ mapView: MKMapView, didUpdate userLocation: MKUserLocation) {
+            guard let loc = userLocation.location else { return }
+            lastLocation = loc
+            updateArrow()
+            if navActive && following {
+                followCamera(mapView, loc)
+            }
         }
 
         // MARK: ضبط الإطار
@@ -342,7 +507,7 @@ struct OfflineMapView: UIViewRepresentable {
 
         @objc func longPress(_ g: UILongPressGestureRecognizer) {
             guard g.state == .began, let map = g.view as? MKMapView else { return }
-            if pathMode || editMode { return }
+            if pathMode || editMode || navActive { return }
             let pt = g.location(in: map)
             if nearestAnnotation(map, pt, within: 32) != nil { return }
             let coord = map.convert(pt, toCoordinateFrom: map)
@@ -470,6 +635,7 @@ struct OfflineMapView: UIViewRepresentable {
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             let c = mapView.centerCoordinate
+            updateArrow()
             DispatchQueue.main.async { [weak self] in
                 self?.onCenter(c)
             }
@@ -478,11 +644,27 @@ struct OfflineMapView: UIViewRepresentable {
         func mapView(_ m: MKMapView, rendererFor o: MKOverlay) -> MKOverlayRenderer {
             if let t = o as? MKTileOverlay { return MKTileOverlayRenderer(tileOverlay: t) }
 
+            if let l = o as? MKPolyline, l === navCasing {
+                let r = MKPolylineRenderer(polyline: l)
+                r.strokeColor = UIColor(red: 0.04, green: 0.18, blue: 0.45, alpha: 1)
+                r.lineWidth = 11
+                r.lineCap = .round
+                r.lineJoin = .round
+                return r
+            }
+
             if let l = o as? MKPolyline, l === navLine {
                 let r = MKPolylineRenderer(polyline: l)
-                r.strokeColor = navRoad ? UIColor.systemBlue : UIColor.systemCyan
-                r.lineWidth = 6
-                if !navRoad { r.lineDashPattern = [10, 8] }
+                r.lineCap = .round
+                r.lineJoin = .round
+                if navRoad {
+                    r.strokeColor = UIColor(red: 0.30, green: 0.68, blue: 1.0, alpha: 1)
+                    r.lineWidth = 7
+                } else {
+                    r.strokeColor = UIColor.systemCyan
+                    r.lineWidth = 5
+                    r.lineDashPattern = [10, 8]
+                }
                 return r
             }
 
@@ -528,10 +710,26 @@ struct OfflineMapView: UIViewRepresentable {
         }
 
         func mapView(_ m: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            // سهم موقعي بدل النقطة الدائرية
+            if annotation is MKUserLocation {
+                let id = "me"
+                let v = m.dequeueReusableAnnotationView(withIdentifier: id)
+                    ?? MKAnnotationView(annotation: annotation, reuseIdentifier: id)
+                v.annotation = annotation
+                v.image = UserArrow.image()
+                v.centerOffset = CGPoint.zero
+                v.canShowCallout = false
+                v.zPriority = .max
+                v.transform = CGAffineTransform(rotationAngle: CGFloat(arrowAngle(m)))
+                return v
+            }
+
             if let a = annotation as? PointAnnotation {
                 var text = Coords.summary(a.coordinate)
                 if !a.note.isEmpty { text = a.note + "\n" + text }
-                let cluster: String? = editMode ? nil : "pts"
+                let canCluster = clusterPoints && !editMode && !a.pinned
+                let cluster: String? = canCluster ? "pts" : nil
+                let prio: MKFeatureDisplayPriority = a.pinned ? .required : .defaultHigh
 
                 if let img = MilSymbol.image(for: a.symbol) {
                     let id = "sym"
@@ -543,6 +741,7 @@ struct OfflineMapView: UIViewRepresentable {
                     v.canShowCallout = true
                     v.isDraggable = editMode
                     v.clusteringIdentifier = cluster
+                    v.displayPriority = prio
                     v.detailCalloutAccessoryView = calloutLabel(text)
                     v.rightCalloutAccessoryView = iconButton("pencil")
                     v.leftCalloutAccessoryView = iconButton("doc.on.doc")
@@ -557,6 +756,7 @@ struct OfflineMapView: UIViewRepresentable {
                 v.markerTintColor = LDKStyle.color(a.colorName)
                 v.isDraggable = editMode
                 v.clusteringIdentifier = cluster
+                v.displayPriority = prio
                 v.detailCalloutAccessoryView = calloutLabel(text)
                 v.rightCalloutAccessoryView = iconButton("pencil")
                 v.leftCalloutAccessoryView = iconButton("doc.on.doc")

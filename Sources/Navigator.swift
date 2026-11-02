@@ -34,8 +34,13 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var heading: Double = 0
     @Published var remaining: Double = 0
     @Published var eta: Double = 0
+    @Published var speed: Double = 0
     @Published var instruction = ""
+    @Published var maneuver = "arrow.up"
+    @Published var nextInstruction = ""
+    @Published var nextManeuver = "arrow.up"
     @Published var stepDistance: Double = 0
+    @Published var progressIndex = 0
     @Published var routeCoords: [CLLocationCoordinate2D] = []
     @Published var routeRevision = 0
     @Published var roadMode = false
@@ -48,7 +53,8 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var directions: MKDirections?
     private var steps: [NavStep] = []
     private var stepIndex = 0
-    private var announced = -1
+    private var spokeIndex = -1
+    private var spokeStage = 0
     private var cum: [Double] = []
     private var routeTotal = 0.0
     private var expected = 0.0
@@ -67,8 +73,8 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     func start(to c: CLLocationCoordinate2D, name: String, online: Bool) {
         self.online = online
-        manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.distanceFilter = 5
+        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        manager.distanceFilter = 3
         manager.headingFilter = 3
         manager.requestWhenInUseAuthorization()
         manager.startUpdatingLocation()
@@ -84,8 +90,13 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
         routeCoords = []
         cum = []
         instruction = ""
+        nextInstruction = ""
+        maneuver = "arrow.up"
+        nextManeuver = "arrow.up"
         stepIndex = 0
-        announced = -1
+        spokeIndex = -1
+        spokeStage = 0
+        progressIndex = 0
         offRoute = 0
         needsRoute = true
         hasFix = false
@@ -108,6 +119,9 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
         routeCoords = []
         target = nil
         instruction = ""
+        nextInstruction = ""
+        progressIndex = 0
+        speed = 0
         routeRevision += 1
     }
 
@@ -189,13 +203,38 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
         steps = list
         stepIndex = 0
-        announced = -1
+        spokeIndex = -1
+        spokeStage = 0
+        progressIndex = 0
         offRoute = 0
         roadMode = true
         status = "ملاحة على الطرق"
         instruction = steps.first?.text ?? ""
+        maneuver = Navigator.icon(for: instruction)
         routeRevision += 1
         if let loc = lastLoc { update(loc) }
+    }
+
+    // MARK: - أيقونة المنعطف
+
+    static func icon(for text: String) -> String {
+        let t = text.lowercased()
+        if t.contains("u-turn") || t.contains("uturn") || t.contains("استدار") || t.contains("للخلف") {
+            return "arrow.uturn.left"
+        }
+        if t.contains("roundabout") || t.contains("دوار") {
+            return "arrow.triangle.2.circlepath"
+        }
+        if t.contains("arrive") || t.contains("destination") || t.contains("وجهتك") || t.contains("الوجهة") {
+            return "flag.checkered"
+        }
+        if t.contains("left") || t.contains("يسار") {
+            return "arrow.turn.up.left"
+        }
+        if t.contains("right") || t.contains("يمين") {
+            return "arrow.turn.up.right"
+        }
+        return "arrow.up"
     }
 
     // MARK: - التحديث
@@ -205,6 +244,7 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
         let here = loc.coordinate
         distance = Coords.distance(here, t)
         bearing = Coords.bearing(from: here, to: t)
+        speed = max(0, loc.speed)
 
         if distance < 30 && !arrived {
             arrived = true
@@ -228,15 +268,29 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     private func trackRoute(_ loc: CLLocation) {
         let here = loc.coordinate
-        var best = 0
+        let n = routeCoords.count
+
+        // البحث عن أقرب نقطة على المسار ضمن نافذة حول التقدم الحالي
+        var lo = max(0, min(progressIndex, n - 1) - 5)
+        var hi = min(n, progressIndex + 250)
+        var best = min(progressIndex, n - 1)
         var bd = Double.greatestFiniteMagnitude
-        for i in 0..<routeCoords.count {
-            let d = Coords.distance(here, routeCoords[i])
-            if d < bd {
-                bd = d
-                best = i
+        for pass in 0..<2 {
+            if lo < hi {
+                for i in lo..<hi {
+                    let d = Coords.distance(here, routeCoords[i])
+                    if d < bd {
+                        bd = d
+                        best = i
+                    }
+                }
             }
+            if bd < 120 || pass == 1 { break }
+            lo = 0
+            hi = n
         }
+        progressIndex = best
+
         remaining = max(0, routeTotal - cum[best]) + bd
         eta = routeTotal > 0 ? expected * remaining / routeTotal : 0
 
@@ -254,27 +308,55 @@ final class Navigator: NSObject, ObservableObject, CLLocationManagerDelegate {
             let d = Coords.distance(here, s.start)
             stepDistance = d
             instruction = s.text
-            if d < 120 && announced < stepIndex {
-                announced = stepIndex
-                speak(s.text)
+            maneuver = Navigator.icon(for: s.text)
+            if stepIndex + 1 < steps.count {
+                nextInstruction = steps[stepIndex + 1].text
+                nextManeuver = Navigator.icon(for: nextInstruction)
+            } else {
+                nextInstruction = ""
             }
+
+            var stage = 0
+            if d < 150 { stage = 2 } else if d < 700 { stage = 1 }
+            if spokeIndex != stepIndex {
+                spokeIndex = stepIndex
+                spokeStage = 0
+            }
+            if stage > spokeStage {
+                spokeStage = stage
+                speak(lead(d, s.text) + s.text)
+            }
+
             if d < 28 && stepIndex < steps.count - 1 {
                 stepIndex += 1
             }
         }
     }
 
+    // MARK: - الصوت
+
+    private func isArabic(_ s: String) -> Bool {
+        for sc in s.unicodeScalars {
+            if sc.value >= 0x0600 && sc.value <= 0x06FF { return true }
+        }
+        return false
+    }
+
+    private func lead(_ d: Double, _ text: String) -> String {
+        if d < 60 { return "" }
+        let arabic = isArabic(text)
+        if d >= 1000 {
+            let km = String(format: "%.1f", d / 1000)
+            return arabic ? "بعد \(km) كيلومتر، " : "In \(km) kilometers, "
+        }
+        let m = max(50, Int((d / 50).rounded()) * 50)
+        return arabic ? "بعد \(m) متر، " : "In \(m) meters, "
+    }
+
     private func speak(_ text: String) {
         if !voice || text.isEmpty { return }
         let u = AVSpeechUtterance(string: text)
-        var arabic = false
-        for sc in text.unicodeScalars {
-            if sc.value >= 0x0600 && sc.value <= 0x06FF {
-                arabic = true
-                break
-            }
-        }
-        u.voice = AVSpeechSynthesisVoice(language: arabic ? "ar-SA" : "en-US")
+        u.voice = AVSpeechSynthesisVoice(language: isArabic(text) ? "ar-SA" : "en-US")
         u.rate = 0.48
         synth.speak(u)
     }
