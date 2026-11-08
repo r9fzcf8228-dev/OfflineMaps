@@ -80,6 +80,7 @@ struct OfflineMapView: UIViewRepresentable {
     let onPath: (PathInfo) -> Void
     let onPathMessage: (String) -> Void
     let onFollowChange: (Bool) -> Void
+    let onEditShape: (UUID) -> Void
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView()
@@ -142,6 +143,7 @@ struct OfflineMapView: UIViewRepresentable {
         c.onPath = onPath
         c.onPathMessage = onPathMessage
         c.onFollowChange = onFollowChange
+        c.onEditShape = onEditShape
         c.pathMode = pathMode
         c.followRoads = followRoads
         c.editMode = editMode
@@ -166,6 +168,7 @@ struct OfflineMapView: UIViewRepresentable {
             map.removeAnnotations(old)
             c.shapeOverlays = []
             c.styles = [:]
+            c.shapeIDs = [:]
 
             var polygons: [MKOverlay] = []
             var lines: [MKOverlay] = []
@@ -177,7 +180,10 @@ struct OfflineMapView: UIViewRepresentable {
                     if showAreas && cs.count >= 3 {
                         let poly = MKPolygon(coordinates: &cs, count: cs.count)
                         poly.title = s.name
-                        c.styles[ObjectIdentifier(poly)] = Coordinator.Style(color: col, dashed: false, width: 2)
+                        let aw: CGFloat = s.lineWidth > 0 ? CGFloat(s.lineWidth) : 2
+                        c.styles[ObjectIdentifier(poly)] = Coordinator.Style(color: col, dashed: false,
+                                                                             width: aw, fill: CGFloat(s.fillAlpha))
+                        c.shapeIDs[ObjectIdentifier(poly)] = s.id
                         polygons.append(poly)
                     }
                 } else {
@@ -186,8 +192,11 @@ struct OfflineMapView: UIViewRepresentable {
                     if wanted && cs.count >= 2 {
                         let line = MKPolyline(coordinates: &cs, count: cs.count)
                         line.title = s.name
-                        let w: CGFloat = (s.kind == "route") ? 4 : 3
-                        c.styles[ObjectIdentifier(line)] = Coordinator.Style(color: col, dashed: s.dashed, width: w)
+                        var w: CGFloat = (s.kind == "route") ? 4 : 3
+                        if s.lineWidth > 0 { w = CGFloat(s.lineWidth) }
+                        c.styles[ObjectIdentifier(line)] = Coordinator.Style(color: col, dashed: s.dashed,
+                                                                             width: w, fill: 0)
+                        c.shapeIDs[ObjectIdentifier(line)] = s.id
                         lines.append(line)
                     }
                 }
@@ -289,6 +298,7 @@ struct OfflineMapView: UIViewRepresentable {
             let color: UIColor
             let dashed: Bool
             let width: CGFloat
+            let fill: CGFloat
         }
 
         weak var map: MKMapView?
@@ -300,6 +310,8 @@ struct OfflineMapView: UIViewRepresentable {
         var onPath: (PathInfo) -> Void = { _ in }
         var onPathMessage: (String) -> Void = { _ in }
         var onFollowChange: (Bool) -> Void = { _ in }
+        var onEditShape: (UUID) -> Void = { _ in }
+        var shapeIDs: [ObjectIdentifier: UUID] = [:]
 
         var lastOverlay: MKTileOverlay?
         var lastKey = ""
@@ -539,13 +551,96 @@ struct OfflineMapView: UIViewRepresentable {
         }
 
         @objc func handleTap(_ g: UITapGestureRecognizer) {
-            guard pathMode, !busy, g.state == .ended, let map = map else { return }
+            guard g.state == .ended, let map = map else { return }
             let pt = g.location(in: map)
-            var c = map.convert(pt, toCoordinateFrom: map)
-            if let a = nearestAnnotation(map, pt, within: 28), !(a is PathVertex) {
-                c = a.coordinate
+
+            if pathMode {
+                if busy { return }
+                var c = map.convert(pt, toCoordinateFrom: map)
+                if let a = nearestAnnotation(map, pt, within: 28), !(a is PathVertex) {
+                    c = a.coordinate
+                }
+                addTap(c)
+                return
             }
-            addTap(c)
+
+            if editMode {
+                if nearestAnnotation(map, pt, within: 28) != nil { return }
+                if let id = shapeAt(map, pt) {
+                    onEditShape(id)
+                }
+            }
+        }
+
+        // MARK: اختيار منطقة أو خط بالضغط عليه
+
+        func segDist(_ p: MKMapPoint, _ a: MKMapPoint, _ b: MKMapPoint) -> Double {
+            let dx = b.x - a.x
+            let dy = b.y - a.y
+            let l2 = dx * dx + dy * dy
+            var t = 0.0
+            if l2 > 0 {
+                t = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2))
+            }
+            let px = a.x + t * dx
+            let py = a.y + t * dy
+            return hypot(p.x - px, p.y - py)
+        }
+
+        func lineDistance(_ l: MKPolyline, _ p: MKMapPoint) -> Double {
+            let n = l.pointCount
+            if n < 2 { return Double.greatestFiniteMagnitude }
+            let pts = l.points()
+            var best = Double.greatestFiniteMagnitude
+            for i in 1..<n {
+                let d = segDist(p, pts[i - 1], pts[i])
+                if d < best { best = d }
+            }
+            return best
+        }
+
+        func inside(_ poly: MKPolygon, _ p: MKMapPoint) -> Bool {
+            let n = poly.pointCount
+            if n < 3 { return false }
+            let pts = poly.points()
+            var result = false
+            var j = n - 1
+            for i in 0..<n {
+                let a = pts[i]
+                let b = pts[j]
+                if (a.y > p.y) != (b.y > p.y) {
+                    let x = (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x
+                    if p.x < x { result.toggle() }
+                }
+                j = i
+            }
+            return result
+        }
+
+        func shapeAt(_ map: MKMapView, _ pt: CGPoint) -> UUID? {
+            let coord = map.convert(pt, toCoordinateFrom: map)
+            let mp = MKMapPoint(coord)
+            let perPixel = map.visibleMapRect.size.width / Double(max(map.bounds.width, 1))
+            let tol = perPixel * 24
+
+            // الخطوط أولاً لأنها رفيعة، ثم المناطق
+            var bestID: UUID?
+            var bestD = Double.greatestFiniteMagnitude
+            for o in shapeOverlays {
+                guard let id = shapeIDs[ObjectIdentifier(o)], let l = o as? MKPolyline else { continue }
+                let d = lineDistance(l, mp)
+                if d < tol && d < bestD {
+                    bestD = d
+                    bestID = id
+                }
+            }
+            if let b = bestID { return b }
+
+            for o in shapeOverlays.reversed() {
+                guard let id = shapeIDs[ObjectIdentifier(o)], let poly = o as? MKPolygon else { continue }
+                if inside(poly, mp) { return id }
+            }
+            return nil
         }
 
         // MARK: المسار والقياس
@@ -691,9 +786,9 @@ struct OfflineMapView: UIViewRepresentable {
             if let p = o as? MKPolygon {
                 let r = MKPolygonRenderer(polygon: p)
                 let col = st?.color ?? UIColor.systemRed
-                r.fillColor = col.withAlphaComponent(0.3)
+                r.fillColor = col.withAlphaComponent(st?.fill ?? 0.3)
                 r.strokeColor = col
-                r.lineWidth = 2
+                r.lineWidth = st?.width ?? 2
                 return r
             }
             if let l = o as? MKPolyline {

@@ -19,6 +19,45 @@ let colorChoices: [ColorChoice] = [
     ColorChoice(id: "gray", title: "رمادي")
 ]
 
+enum ColorHex {
+    // يحوّل لون SwiftUI إلى نص #AARRGGBB
+    static func hex(_ c: Color) -> String {
+        let ui = UIColor(c)
+        var r: CGFloat = 0
+        var g: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 0
+        ui.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let ai = Int((a * 255).rounded())
+        let ri = Int((r * 255).rounded())
+        let gi = Int((g * 255).rounded())
+        let bi = Int((b * 255).rounded())
+        return String(format: "#%02X%02X%02X%02X", ai, ri, gi, bi)
+    }
+}
+
+// اختيار لون: ألوان جاهزة + لون حر من لوحة الألوان
+struct ColorField: View {
+    let title: String
+    @Binding var value: String
+
+    private var custom: Binding<Color> {
+        Binding(
+            get: { Color(LDKStyle.color(value)) },
+            set: { value = ColorHex.hex($0) }
+        )
+    }
+
+    var body: some View {
+        Picker(title, selection: $value) {
+            ForEach(colorChoices) { item in
+                Text(item.title).tag(item.id)
+            }
+        }
+        ColorPicker("لون حر (لوحة الألوان)", selection: custom, supportsOpacity: false)
+    }
+}
+
 struct PointEditor: View {
     @State private var p: MapPoint
     @State private var coordText: String
@@ -29,6 +68,7 @@ struct PointEditor: View {
     @State private var customNames: [String] = []
     @State private var customName: String = ""
     @State private var showSymPicker = false
+    @State private var useFrameColor = false
     @State private var errorText = ""
     @State private var showError = false
     @Environment(\.dismiss) private var dismiss
@@ -54,12 +94,18 @@ struct PointEditor: View {
             _aff = State(initialValue: parsed.0)
             _type = State(initialValue: parsed.1)
             _size = State(initialValue: parsed.2)
+            if let fc = parsed.3 {
+                _useFrameColor = State(initialValue: true)
+                var q = point
+                q.color = fc
+                _p = State(initialValue: q)
+            }
         }
         _customNames = State(initialValue: MilSymbol.customNames())
     }
 
     private var currentKey: String {
-        if mode == 1 { return MilSymbol.key(aff, type, size) }
+        if mode == 1 { return MilSymbol.key(aff, type, size, useFrameColor ? p.color : nil) }
         if mode == 2 && !customName.isEmpty { return "img|" + customName }
         return ""
     }
@@ -91,11 +137,7 @@ struct PointEditor: View {
                 }
 
                 Section("اللون") {
-                    Picker("اللون", selection: $p.color) {
-                        ForEach(colorChoices) { item in
-                            Text(item.title).tag(item.id)
-                        }
-                    }
+                    ColorField(title: "لون العلامة", value: $p.color)
                 }
 
                 Section("الرمز") {
@@ -122,6 +164,7 @@ struct PointEditor: View {
                                 Text(s.title).tag(s)
                             }
                         }
+                        Toggle("تلوين إطار الرمز باللون أعلاه", isOn: $useFrameColor)
                     }
 
                     if mode == 2 {
@@ -242,6 +285,84 @@ struct GoToSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("إلغاء") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+
+struct ShapeEditor: View {
+    @State private var s: MapShape
+    @Environment(\.dismiss) private var dismiss
+    let onSave: (MapShape) -> Void
+    let onDelete: () -> Void
+
+    init(shape: MapShape, onSave: @escaping (MapShape) -> Void, onDelete: @escaping () -> Void) {
+        var start = shape
+        if start.lineWidth <= 0 {
+            start.lineWidth = (start.kind == "route") ? 4 : 3
+        }
+        _s = State(initialValue: start)
+        self.onSave = onSave
+        self.onDelete = onDelete
+    }
+
+    private var kindTitle: String {
+        switch s.kind {
+        case "area": return "منطقة / قاطع"
+        case "route": return "مسار محفوظ"
+        case "track": return "مسار تتبّع"
+        default: return "خط / حدود"
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(kindTitle) {
+                    TextField("الاسم", text: $s.name)
+                }
+
+                Section("اللون") {
+                    ColorField(title: "لون", value: $s.color)
+                }
+
+                if s.kind == "area" {
+                    Section("التعبئة") {
+                        Slider(value: $s.fillAlpha, in: 0...0.8)
+                        Text("شفافية التعبئة: \(Int((s.fillAlpha * 100).rounded()))%")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    Section("حدّ المنطقة") {
+                        Stepper("سمك الحدّ: \(Int(s.lineWidth))", value: $s.lineWidth, in: 1...12, step: 1)
+                    }
+                } else {
+                    Section("الخط") {
+                        Stepper("السمك: \(Int(s.lineWidth))", value: $s.lineWidth, in: 1...12, step: 1)
+                        Toggle("خط متقطع", isOn: $s.dashed)
+                    }
+                }
+
+                Section {
+                    Button("حذف", role: .destructive) {
+                        onDelete()
+                        dismiss()
+                    }
+                }
+            }
+            .navigationTitle("تعديل الشكل")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("إلغاء") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("حفظ") {
+                        onSave(s)
+                        dismiss()
+                    }
                 }
             }
         }

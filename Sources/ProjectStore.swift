@@ -50,22 +50,27 @@ struct MapShape: Identifiable, Codable {
     var name: String
     var color: String
     var dashed: Bool
+    var fillAlpha: Double
+    var lineWidth: Double
     var lats: [Double]
     var lons: [Double]
 
     init(id: UUID = UUID(), kind: String, name: String, color: String,
-         dashed: Bool = false, coords: [CLLocationCoordinate2D]) {
+         dashed: Bool = false, fillAlpha: Double = 0.3, lineWidth: Double = 0,
+         coords: [CLLocationCoordinate2D]) {
         self.id = id
         self.kind = kind
         self.name = name
         self.color = color
         self.dashed = dashed
+        self.fillAlpha = fillAlpha
+        self.lineWidth = lineWidth
         self.lats = coords.map { $0.latitude }
         self.lons = coords.map { $0.longitude }
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, name, color, dashed, lats, lons
+        case id, kind, name, color, dashed, fillAlpha, lineWidth, lats, lons
     }
 
     init(from decoder: Decoder) throws {
@@ -75,6 +80,8 @@ struct MapShape: Identifiable, Codable {
         name = (try? c.decode(String.self, forKey: .name)) ?? ""
         color = (try? c.decode(String.self, forKey: .color)) ?? "black"
         dashed = (try? c.decode(Bool.self, forKey: .dashed)) ?? false
+        fillAlpha = (try? c.decode(Double.self, forKey: .fillAlpha)) ?? 0.3
+        lineWidth = (try? c.decode(Double.self, forKey: .lineWidth)) ?? 0
         lats = (try? c.decode([Double].self, forKey: .lats)) ?? []
         lons = (try? c.decode([Double].self, forKey: .lons)) ?? []
     }
@@ -178,6 +185,53 @@ final class ProjectStore: ObservableObject {
         if coords.count < 2 { return }
         shapes.append(MapShape(kind: "route", name: name, color: "blue", dashed: false, coords: coords))
         changed()
+    }
+
+    func updateShape(_ s: MapShape) {
+        if let i = shapes.firstIndex(where: { $0.id == s.id }) {
+            shapes[i] = s
+            changed()
+        }
+    }
+
+    func deleteShape(_ id: UUID) {
+        shapes.removeAll(where: { $0.id == id })
+        changed()
+    }
+
+    func addShape(kind: String, name: String, color: String, coords: [CLLocationCoordinate2D]) {
+        let need = (kind == "area") ? 3 : 2
+        if coords.count < need { return }
+        shapes.append(MapShape(kind: kind, name: name, color: color, coords: coords))
+        changed()
+    }
+
+    // نسخة احتياطية كاملة (للنقل إلى جهاز آخر عليه التطبيق)
+    func backupData() -> Data? {
+        let f = FileData(points: points, shapes: shapes, imported: imported)
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted]
+        return try? enc.encode(f)
+    }
+
+    // دمج نسخة احتياطية: يضيف ما ليس موجوداً فقط. يعيد (نقاط مضافة، أشكال مضافة)
+    func mergeBackup(_ data: Data) -> (Int, Int)? {
+        guard let f = try? JSONDecoder().decode(FileData.self, from: data) else { return nil }
+        var addedP = 0
+        var addedS = 0
+        for p in f.points where !points.contains(where: { $0.id == p.id }) {
+            points.append(p)
+            addedP += 1
+        }
+        for sh in f.shapes where !shapes.contains(where: { $0.id == sh.id }) {
+            shapes.append(sh)
+            addedS += 1
+        }
+        for n in f.imported where !imported.contains(n) {
+            imported.append(n)
+        }
+        changed()
+        return (addedP, addedS)
     }
 
     func clearAll() {

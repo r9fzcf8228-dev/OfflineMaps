@@ -79,6 +79,7 @@ struct HomeView: View {
     let onNavigate: () -> Void
     let onImport: () -> Void
     let onOpenFile: (URL) -> Void
+    let onExport: () -> Void
 
     @State private var appeared = false
     @State private var glow = false
@@ -172,6 +173,9 @@ struct HomeView: View {
             HomeCard(icon: "square.and.arrow.down.fill", title: "استيراد", subtitle: "ملفات LDK وخرائط MBTiles",
                      colors: [Color(red: 0.95, green: 0.4, blue: 0.5), Color(red: 0.75, green: 0.2, blue: 0.35)],
                      delay: 0.44, appeared: appeared, action: onImport)
+            HomeCard(icon: "square.and.arrow.up.fill", title: "تصدير ومشاركة", subtitle: "KML وGPX ونسخة احتياطية",
+                     colors: [Color(red: 0.4, green: 0.8, blue: 0.5), Color(red: 0.15, green: 0.55, blue: 0.3)],
+                     delay: 0.52, appeared: appeared, action: onExport)
         }
     }
 

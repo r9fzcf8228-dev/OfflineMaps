@@ -69,17 +69,21 @@ enum UnitSize: String, CaseIterable {
 enum MilSymbol {
     static var cache: [String: UIImage] = [:]
 
-    static func key(_ a: Affiliation, _ t: UnitType, _ s: UnitSize) -> String {
-        return "std|\(a.rawValue)|\(t.rawValue)|\(s.rawValue)"
+    // اللون اختياري: إن وُجد يُستعمل لتلوين إطار الرمز بدل لون الانتماء الافتراضي
+    static func key(_ a: Affiliation, _ t: UnitType, _ s: UnitSize, _ color: String? = nil) -> String {
+        var k = "std|\(a.rawValue)|\(t.rawValue)|\(s.rawValue)"
+        if let c = color, !c.isEmpty { k += "|" + c }
+        return k
     }
 
-    static func parse(_ key: String) -> (Affiliation, UnitType, UnitSize)? {
+    static func parse(_ key: String) -> (Affiliation, UnitType, UnitSize, String?)? {
         let p = key.split(separator: "|").map { String($0) }
-        guard p.count == 4, p[0] == "std",
+        guard p.count == 4 || p.count == 5, p[0] == "std",
               let a = Affiliation(rawValue: p[1]),
               let t = UnitType(rawValue: p[2]),
               let s = UnitSize(rawValue: p[3]) else { return nil }
-        return (a, t, s)
+        let c: String? = (p.count == 5) ? p[4] : nil
+        return (a, t, s, c)
     }
 
     static func image(for key: String) -> UIImage? {
@@ -89,7 +93,7 @@ enum MilSymbol {
         if key.hasPrefix("img|") {
             img = loadCustom(String(key.dropFirst(4)))
         } else if let parsed = parse(key) {
-            img = draw(parsed.0, parsed.1, parsed.2)
+            img = draw(parsed.0, parsed.1, parsed.2, parsed.3)
         }
         if let i = img { cache[key] = i }
         return img
@@ -138,7 +142,7 @@ enum MilSymbol {
 
     // MARK: - رسم الرموز القياسية
 
-    static func draw(_ aff: Affiliation, _ type: UnitType, _ size: UnitSize) -> UIImage {
+    static func draw(_ aff: Affiliation, _ type: UnitType, _ size: UnitSize, _ custom: String? = nil) -> UIImage {
         let W: CGFloat = 44
         let H: CGFloat = 58
         let fmt = UIGraphicsImageRendererFormat.default()
@@ -177,6 +181,17 @@ enum MilSymbol {
                 strokeColor = UIColor(red: 0.5, green: 0.45, blue: 0, alpha: 1)
                 box = CGRect(x: cx - 14, y: cy - 14, width: 28, height: 28)
                 framePath = UIBezierPath(roundedRect: box, cornerRadius: 11)
+            }
+
+            if let cname = custom, !cname.isEmpty {
+                let base = LDKStyle.color(cname)
+                var h: CGFloat = 0
+                var sat: CGFloat = 0
+                var br: CGFloat = 0
+                var al: CGFloat = 0
+                base.getHue(&h, saturation: &sat, brightness: &br, alpha: &al)
+                fillColor = base
+                strokeColor = UIColor(hue: h, saturation: sat, brightness: br * 0.45, alpha: 1)
             }
 
             fillColor.setFill()

@@ -42,7 +42,9 @@ enum ActiveSheet: Identifiable {
     case goTo
     case navTarget
     case offlineMaps
+    case export
     case editPoint(MapPoint, Bool)
+    case editShape(MapShape)
 
     var id: String {
         switch self {
@@ -50,6 +52,8 @@ enum ActiveSheet: Identifiable {
         case .goTo: return "goto"
         case .navTarget: return "navtarget"
         case .offlineMaps: return "offline"
+        case .export: return "export"
+        case .editShape(let sh): return "shape-" + sh.id.uuidString
         case .editPoint(let p, _): return "edit-" + p.id.uuidString
         }
     }
@@ -138,7 +142,8 @@ struct ContentView: View {
                      }
                  },
                  onImport: { sheet = .importer },
-                 onOpenFile: { url in open(url) })
+                 onOpenFile: { url in open(url) },
+                 onExport: { sheet = .export })
     }
 
     // MARK: - النوافذ
@@ -179,6 +184,14 @@ struct ContentView: View {
                                  reload()
                                  setActiveBase(name)
                              })
+        case .export:
+            ExportSheet(points: store.points,
+                        shapes: store.shapes,
+                        backup: { store.backupData() })
+        case .editShape(let sh):
+            ShapeEditor(shape: sh,
+                        onSave: { ns in store.updateShape(ns) },
+                        onDelete: { store.deleteShape(sh.id) })
         case .editPoint(let p, let isNew):
             PointEditor(point: p, isNew: isNew,
                         onSave: { np in store.upsert(np) },
@@ -228,7 +241,8 @@ struct ContentView: View {
                            onLongPress: { c in newPoint(at: c) },
                            onPath: { info in pathInfo = info },
                            onPathMessage: { m in say(m) },
-                           onFollowChange: { f in navFollowing = f })
+                           onFollowChange: { f in navFollowing = f },
+                           onEditShape: { id in openShapeEditor(id) })
                 .ignoresSafeArea()
             if showCrosshair && !navigator.active {
                 crosshair
@@ -276,6 +290,7 @@ struct ContentView: View {
             Toggle("تجميع النقاط القريبة", isOn: $clusterPoints)
             Divider()
             Button("الخرائط دون إنترنت") { sheet = .offlineMaps }
+            Button("تصدير ومشاركة") { sheet = .export }
             Button("استيراد ملف") { sheet = .importer }
             Button("تكبير على البيانات") {
                 controller.needsFit = true
@@ -416,6 +431,9 @@ struct ContentView: View {
                     editMode.toggle()
                     if editMode { pathMode = false }
                 }
+                if editMode {
+                    showBanner("اسحب النقاط لتحريكها، واضغط منطقة أو خطاً لتلوينه وتعديله")
+                }
             }
             toolButton("arrow.down.circle.fill", "تنزيل", false) {
                 sheet = .offlineMaps
@@ -486,10 +504,19 @@ struct ContentView: View {
                     .buttonStyle(.bordered)
                 Button("مسح") { controller.clearPath() }
                     .buttonStyle(.bordered)
-                Button("حفظ كمسار") { saveRoute() }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Theme.accent)
-                    .disabled(pathInfo.count < 2)
+                Menu {
+                    Button("حفظ كمسار") { saveRoute() }
+                    Button("حفظ كمنطقة مظللة (قاطع)") { saveShape("area") }
+                    Button("حفظ كخط حدود") { saveShape("line") }
+                } label: {
+                    Text("حفظ")
+                        .font(.system(size: 15, weight: .bold))
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 7)
+                        .background(Theme.accent, in: Capsule())
+                        .foregroundColor(.black)
+                }
+                .disabled(pathInfo.count < 2)
             }
         }
         .padding(14)
@@ -546,6 +573,32 @@ struct ContentView: View {
         sheet = .editPoint(p, true)
     }
 
+    func openShapeEditor(_ id: UUID) {
+        if let sh = store.shapes.first(where: { $0.id == id }) {
+            Haptics.tap()
+            sheet = .editShape(sh)
+        }
+    }
+
+    func saveShape(_ kind: String) {
+        let cs = controller.pathCoords()
+        let need = (kind == "area") ? 3 : 2
+        if cs.count < need { return }
+        var color = "blue"
+        var title = "مسار"
+        if kind == "area" {
+            color = "yellow"
+            title = "منطقة"
+        } else if kind == "line" {
+            color = "black"
+            title = "حدود"
+        }
+        let n = store.shapes.filter { $0.kind == kind }.count + 1
+        store.addShape(kind: kind, name: "\(title) \(n)", color: color, coords: cs)
+        controller.clearPath()
+        say("تم الحفظ. لتلوينه: فعّل «تعديل» ثم اضغط عليه")
+    }
+
     func openEditor(_ id: UUID) {
         if let p = store.points.first(where: { $0.id == id }) {
             sheet = .editPoint(p, false)
@@ -596,6 +649,10 @@ struct ContentView: View {
             }
             try FileManager.default.copyItem(at: url, to: dest)
             reload()
+            if ext == "json" {
+                importBackup(dest)
+                return
+            }
             if ext == "mbtiles" {
                 setActiveBase(url.lastPathComponent)
                 say("تم استيراد الخريطة وتفعيلها: \(url.lastPathComponent)")
@@ -609,6 +666,16 @@ struct ContentView: View {
                 say("فشل النسخ: \(error.localizedDescription)")
             }
         }
+    }
+
+    func importBackup(_ url: URL) {
+        guard let d = try? Data(contentsOf: url), let r = store.mergeBackup(d) else {
+            say("الملف ليس نسخة احتياطية صالحة")
+            return
+        }
+        try? FileManager.default.removeItem(at: url)
+        controller.needsFit = true
+        say("تم استيراد \(r.0) نقطة و\(r.1) شكل")
     }
 
     func loadLDK(_ url: URL) {
