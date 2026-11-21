@@ -89,6 +89,9 @@ struct ContentView: View {
     @State private var pathMode = false
     @State private var followRoads = false
     @State private var pathInfo = PathInfo()
+    @State private var rotationLocked = false
+    @State private var showClearConfirm = false
+    @State private var copyToast: String? = nil
 
     var body: some View {
         ZStack {
@@ -115,13 +118,23 @@ struct ContentView: View {
         .alert(message, isPresented: $showMessage) {
             Button("OK", role: .cancel) {}
         }
+        .alert("مسح كل البيانات؟", isPresented: $showClearConfirm) {
+            Button("مسح الكل", role: .destructive) {
+                controller.clearPath()
+                navigator.stop()
+                store.clearAll()
+                goHome()
+                showBanner("تم مسح كل البيانات")
+            }
+            Button("إلغاء", role: .cancel) {}
+        } message: {
+            Text("سيتم حذف كل النقاط والأشكال والمسارات نهائياً. لا يمكن التراجع.")
+        }
         .onAppear {
             reload()
             loadActiveBase()
         }
     }
-
-    // MARK: - الشاشة الرئيسية
 
     private var homeScreen: some View {
         HomeView(pointsCount: store.points.count,
@@ -145,8 +158,6 @@ struct ContentView: View {
                  onOpenFile: { url in open(url) },
                  onExport: { sheet = .export })
     }
-
-    // MARK: - النوافذ
 
     @ViewBuilder
     private func sheetContent(_ s: ActiveSheet) -> some View {
@@ -204,8 +215,6 @@ struct ContentView: View {
         return { store.deletePoint(p.id) }
     }
 
-    // MARK: - شاشة الخريطة
-
     private var mapStage: some View {
         ZStack {
             OfflineMapView(overlay: overlay,
@@ -229,6 +238,7 @@ struct ContentView: View {
                            navActive: navigator.active,
                            navFollow: navFollowing,
                            navNear: navigator.roadMode && navigator.stepDistance < 180,
+                           rotationLocked: rotationLocked,
                            controller: controller,
                            onCenter: { c in
                                if !navigator.active { center = c }
@@ -247,9 +257,24 @@ struct ContentView: View {
             if showCrosshair && !navigator.active {
                 crosshair
             }
+            if let toast = copyToast {
+                VStack {
+                    Spacer()
+                    Text(toast)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .glass(16)
+                        .padding(.bottom, 130)
+                }
+                .allowsHitTesting(false)
+                .transition(.opacity.combined(with: .scale))
+            }
         }
         .overlay(alignment: .top) { topBar }
         .safeAreaInset(edge: .bottom) { bottomPanel }
+        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: copyToast)
     }
 
     private var crosshair: some View {
@@ -288,6 +313,13 @@ struct ContentView: View {
             Toggle("قمر صناعي", isOn: $hybrid)
             Toggle("الإحداثيات", isOn: $showCrosshair)
             Toggle("تجميع النقاط القريبة", isOn: $clusterPoints)
+            Toggle("قفل الشمال أعلى", isOn: Binding(
+                get: { rotationLocked },
+                set: { newVal in
+                    rotationLocked = newVal
+                    if newVal { controller.resetHeading() }
+                }
+            ))
             Divider()
             Button("الخرائط دون إنترنت") { sheet = .offlineMaps }
             Button("تصدير ومشاركة") { sheet = .export }
@@ -297,10 +329,7 @@ struct ContentView: View {
                 store.changed()
             }
             Button("مسح كل البيانات", role: .destructive) {
-                controller.clearPath()
-                navigator.stop()
-                store.clearAll()
-                goHome()
+                showClearConfirm = true
             }
         } label: {
             Image(systemName: "line.3.horizontal.decrease")
@@ -312,16 +341,51 @@ struct ContentView: View {
     }
 
     private func hudCapsule(_ c: CLLocationCoordinate2D) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("UTM  " + Coords.utmString(c))
-            Text("MGRS " + Coords.mgrsString(c))
-            Text(Coords.ddString(c))
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("UTM  " + Coords.utmString(c))
+                Text("MGRS " + Coords.mgrsString(c))
+                Text(Coords.ddString(c))
+                if let alt = controller.userAltitude, let acc = controller.userAccuracy {
+                    HStack(spacing: 8) {
+                        Text("↑ " + Coords.formatAltitude(alt))
+                        Text("◎ " + Coords.formatAccuracy(acc))
+                    }
+                    .foregroundColor(.white.opacity(0.65))
+                }
+            }
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundColor(.white)
+
+            VStack(spacing: 4) {
+                Button { copy(c, mgrs: true) } label: {
+                    Text("MGRS")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(Theme.accent)
+                        .frame(width: 44, height: 18)
+                        .background(Theme.accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
+                }
+                Button { copy(c, mgrs: false) } label: {
+                    Text("DD")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(Theme.accent)
+                        .frame(width: 44, height: 18)
+                        .background(Theme.accent.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
+                }
+            }
         }
-        .font(.system(size: 11, design: .monospaced))
-        .foregroundColor(.white)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .glass(12)
+    }
+
+    private func copy(_ c: CLLocationCoordinate2D, mgrs: Bool) {
+        UIPasteboard.general.string = mgrs ? Coords.mgrsString(c) : Coords.ddString(c)
+        Haptics.success()
+        withAnimation { copyToast = mgrs ? "تم نسخ MGRS" : "تم نسخ DD" }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            withAnimation { copyToast = nil }
+        }
     }
 
     private var topBar: some View {
@@ -370,8 +434,6 @@ struct ContentView: View {
         .padding(.top, 4)
         .animation(.spring(response: 0.45, dampingFraction: 0.85), value: navigator.active)
     }
-
-    // MARK: - الأسفل
 
     private var bottomPanel: some View {
         VStack(spacing: 8) {
@@ -477,8 +539,9 @@ struct ContentView: View {
         if pathInfo.count < 2 { return "اضغط على الخريطة لإضافة نقاط" }
         let deg = String(format: "%.1f", pathInfo.bearing)
         let mil = Coords.mils(pathInfo.bearing)
+        let backDeg = String(format: "%.1f", Coords.backBearing(pathInfo.bearing))
         let leg = Coords.formatDistance(pathInfo.lastLeg)
-        return "آخر مقطع: \(leg)  |  الاتجاه: \(deg)° / \(mil) mil"
+        return "آخر مقطع: \(leg)  •  اتجاه: \(deg)° / \(mil) mil  •  عكسي: \(backDeg)°"
     }
 
     private var pathPanel: some View {
@@ -491,6 +554,14 @@ struct ContentView: View {
             Text(pathLine2)
                 .font(.system(size: 13))
                 .foregroundColor(Color.white.opacity(0.8))
+            if pathInfo.count >= 3 {
+                let cs = controller.pathCoords()
+                let area = Coords.polygonArea(cs)
+                let perim = Coords.polygonPerimeter(cs)
+                Text("مساحة: \(Coords.formatArea(area))  •  محيط: \(Coords.formatPerimeter(perim))")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.72))
+            }
             if pathInfo.busy {
                 Text("جاري حساب الطريق...")
                     .font(.system(size: 12))
@@ -523,8 +594,6 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .glass(22)
     }
-
-    // MARK: - الإجراءات
 
     private func openMap() {
         controller.needsFit = true
@@ -614,8 +683,6 @@ struct ContentView: View {
         controller.clearPath()
         say("تم حفظ المسار: " + Coords.formatDistance(len))
     }
-
-    // MARK: - الخرائط والملفات
 
     func loadActiveBase() {
         guard let name = UserDefaults.standard.string(forKey: "activeBase") else { return }
