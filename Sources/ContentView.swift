@@ -92,6 +92,9 @@ struct ContentView: View {
     @State private var rotationLocked = false
     @State private var showClearConfirm = false
     @State private var copyToast: String? = nil
+    
+    // ✅ جديد: حفظ إعداد الرؤية الليلية
+    @AppStorage("nightMode") private var nightMode = false
 
     var body: some View {
         ZStack {
@@ -254,6 +257,15 @@ struct ContentView: View {
                            onFollowChange: { f in navFollowing = f },
                            onEditShape: { id in openShapeEditor(id) })
                 .ignoresSafeArea()
+            
+            // ✅ جديد: فلتر الرؤية الليلية
+            if nightMode {
+                Color.red.opacity(0.4)
+                    .blendMode(.multiply)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
+            
             if showCrosshair && !navigator.active {
                 crosshair
             }
@@ -280,11 +292,11 @@ struct ContentView: View {
     private var crosshair: some View {
         ZStack {
             Circle()
-                .stroke(Color.red.opacity(0.6), lineWidth: 1.5)
+                .stroke(nightMode ? Color.green.opacity(0.6) : Color.red.opacity(0.6), lineWidth: 1.5)
                 .frame(width: 26, height: 26)
             Image(systemName: "plus")
                 .font(.system(size: 30, weight: .ultraLight))
-                .foregroundColor(.red)
+                .foregroundColor(nightMode ? .green : .red)
         }
         .allowsHitTesting(false)
     }
@@ -320,6 +332,8 @@ struct ContentView: View {
                     if newVal { controller.resetHeading() }
                 }
             ))
+            // ✅ جديد: تفعيل الرؤية الليلية
+            Toggle("الرؤية الليلية (NVG)", isOn: $nightMode)
             Divider()
             Button("الخرائط دون إنترنت") { sheet = .offlineMaps }
             Button("تصدير ومشاركة") { sheet = .export }
