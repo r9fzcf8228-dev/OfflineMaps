@@ -137,6 +137,16 @@ struct PointEditor: View {
                 Section("اللون") {
                     ColorField(title: "لون العلامة", value: $p.color)
                 }
+                
+                // ✅ جديد: دائرة نصف القطر (مدى السلاح)
+                Section("مدى السلاح / دائرة المسافة") {
+                    Stepper("نصف القطر: \(Int(p.radius)) متر", value: $p.radius, in: 0...50000, step: 100)
+                    if p.radius > 0 {
+                        Text("سيتم رسم دائرة بمدى \(Int(p.radius)) متر حول هذه النقطة.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
 
                 Section("الرمز") {
                     Picker("نوع الرمز", selection: $mode) {
