@@ -14,12 +14,15 @@ struct PathInfo {
 final class MapController: ObservableObject {
     weak var coordinator: OfflineMapView.Coordinator?
     var needsFit = true
+    @Published var userAltitude: Double? = nil
+    @Published var userAccuracy: Double? = nil
 
     func undoPath() { coordinator?.undoPath() }
     func clearPath() { coordinator?.clearPath() }
     func pathCoords() -> [CLLocationCoordinate2D] { return coordinator?.pathCoords ?? [] }
     func goTo(_ c: CLLocationCoordinate2D) { coordinator?.goTo(c) }
     func recenterNow() { coordinator?.recenter() }
+    func resetHeading() { coordinator?.resetHeading() }
 
     func userLocation() -> CLLocation? {
         return coordinator?.map?.userLocation.location
@@ -45,9 +48,7 @@ final class PointAnnotation: MKPointAnnotation {
 }
 
 final class PathVertex: MKPointAnnotation {}
-
 final class TargetAnnotation: MKPointAnnotation {}
-
 final class NavTargetAnnotation: MKPointAnnotation {}
 
 struct OfflineMapView: UIViewRepresentable {
@@ -72,6 +73,7 @@ struct OfflineMapView: UIViewRepresentable {
     let navActive: Bool
     let navFollow: Bool
     let navNear: Bool
+    let rotationLocked: Bool
     let controller: MapController
     let onCenter: (CLLocationCoordinate2D) -> Void
     let onEditPoint: (UUID) -> Void
@@ -151,8 +153,10 @@ struct OfflineMapView: UIViewRepresentable {
         c.navActive = navActive
         c.following = navFollow
         c.near = navNear
+        c.controller = controller
         controller.coordinator = c
         map.mapType = mapType
+        map.isRotateEnabled = !rotationLocked
 
         if c.lastOverlay !== overlay {
             let tiles = map.overlays.filter { $0 is MKTileOverlay }
@@ -223,7 +227,6 @@ struct OfflineMapView: UIViewRepresentable {
             c.lastKey = key
         }
 
-        // الملاحة: علامة الهدف
         var tkey = ""
         if navActive, let t = navTarget {
             tkey = "\(t.latitude),\(t.longitude)"
@@ -243,7 +246,6 @@ struct OfflineMapView: UIViewRepresentable {
             c.navTargetKey = tkey
         }
 
-        // الملاحة: بدء/إنهاء كاميرا التتبع
         if c.lastNavActive != navActive {
             c.lastNavActive = navActive
             if navActive {
@@ -253,7 +255,6 @@ struct OfflineMapView: UIViewRepresentable {
             }
         }
 
-        // الملاحة: خط الطريق (الجزء المتبقي فقط)
         if c.lastNavRevision != navRevision || c.lastNavProgress != navProgress {
             if let l = c.navLine {
                 map.removeOverlay(l)
@@ -312,6 +313,8 @@ struct OfflineMapView: UIViewRepresentable {
         var onFollowChange: (Bool) -> Void = { _ in }
         var onEditShape: (UUID) -> Void = { _ in }
         var shapeIDs: [ObjectIdentifier: UUID] = [:]
+        weak var controller: MapController?
+        var lastControllerUpdate = Date.distantPast
 
         var lastOverlay: MKTileOverlay?
         var lastKey = ""
@@ -360,8 +363,6 @@ struct OfflineMapView: UIViewRepresentable {
             return all
         }
 
-        // MARK: البوصلة والسهم
-
         func startHeading() {
             if CLLocationManager.headingAvailable() {
                 lm.headingFilter = 2
@@ -395,8 +396,6 @@ struct OfflineMapView: UIViewRepresentable {
             v.transform = CGAffineTransform(rotationAngle: CGFloat(arrowAngle(map)))
         }
 
-        // MARK: كاميرا التتبع (على طريقة Waze)
-
         static func offset(_ c: CLLocationCoordinate2D, meters: Double, bearing: Double) -> CLLocationCoordinate2D {
             let r = 6371000.0
             let br = bearing * Double.pi / 180
@@ -410,7 +409,6 @@ struct OfflineMapView: UIViewRepresentable {
         }
 
         func followCamera(_ map: MKMapView, _ loc: CLLocation) {
-            // تقليل التحديثات: لا نحرّك الكاميرا إلا بعد ثانية أو بعد تحرك أكثر من 4 أمتار
             let now = Date()
             if let lc = lastCamCoord,
                now.timeIntervalSince(lastCamTime) < 0.9,
@@ -425,7 +423,6 @@ struct OfflineMapView: UIViewRepresentable {
             if dist > 1200 { dist = 1200 }
             if near && dist > 260 { dist = 260 }
 
-            // الاتجاه يتبع حركتك الفعلية فقط، ولا يدور مع اهتزاز البوصلة عند الوقوف
             if speed >= 1.2 && loc.course >= 0 {
                 let delta = ((loc.course - camHeading + 540).truncatingRemainder(dividingBy: 360)) - 180
                 if abs(delta) > 3 {
@@ -433,7 +430,6 @@ struct OfflineMapView: UIViewRepresentable {
                 }
             }
 
-            // إزاحة صغيرة للأمام حتى يبقى السهم في الثلث الأسفل وفوق الشريط السفلي
             let ahead = Coordinator.offset(loc.coordinate, meters: dist * 0.12, bearing: camHeading)
             let cam = MKMapCamera(lookingAtCenter: ahead, fromDistance: dist, pitch: 50, heading: camHeading)
             map.setCamera(cam, animated: true)
@@ -467,6 +463,14 @@ struct OfflineMapView: UIViewRepresentable {
             followCamera(map, loc)
         }
 
+        func resetHeading() {
+            guard let map = map else { return }
+            let cam = MKMapCamera(lookingAtCenter: map.centerCoordinate,
+                                  fromDistance: map.camera.centerCoordinateDistance,
+                                  pitch: 0, heading: 0)
+            map.setCamera(cam, animated: true)
+        }
+
         @objc func userGesture(_ g: UIGestureRecognizer) {
             if g.state == .began && navActive && following {
                 following = false
@@ -478,12 +482,18 @@ struct OfflineMapView: UIViewRepresentable {
             guard let loc = userLocation.location else { return }
             lastLocation = loc
             updateArrow()
+            let now = Date()
+            if now.timeIntervalSince(lastControllerUpdate) > 0.9 {
+                lastControllerUpdate = now
+                DispatchQueue.main.async { [weak self] in
+                    self?.controller?.userAltitude = loc.altitude
+                    self?.controller?.userAccuracy = loc.horizontalAccuracy
+                }
+            }
             if navActive && following {
                 followCamera(mapView, loc)
             }
         }
-
-        // MARK: ضبط الإطار
 
         func fit(_ map: MKMapView, _ points: [MapPoint], _ shapes: [MapShape]) {
             var all: [CLLocationCoordinate2D] = points.map { $0.coordinate }
@@ -517,8 +527,6 @@ struct OfflineMapView: UIViewRepresentable {
                           animated: true)
             map.selectAnnotation(t, animated: true)
         }
-
-        // MARK: الإيماءات
 
         func gestureRecognizer(_ g: UIGestureRecognizer,
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
@@ -572,8 +580,6 @@ struct OfflineMapView: UIViewRepresentable {
             }
         }
 
-        // MARK: اختيار منطقة أو خط بالضغط عليه
-
         func segDist(_ p: MKMapPoint, _ a: MKMapPoint, _ b: MKMapPoint) -> Double {
             let dx = b.x - a.x
             let dy = b.y - a.y
@@ -623,7 +629,6 @@ struct OfflineMapView: UIViewRepresentable {
             let perPixel = map.visibleMapRect.size.width / Double(max(map.bounds.width, 1))
             let tol = perPixel * 24
 
-            // الخطوط أولاً لأنها رفيعة، ثم المناطق
             var bestID: UUID?
             var bestD = Double.greatestFiniteMagnitude
             for o in shapeOverlays {
@@ -642,8 +647,6 @@ struct OfflineMapView: UIViewRepresentable {
             }
             return nil
         }
-
-        // MARK: المسار والقياس
 
         func addTap(_ c: CLLocationCoordinate2D) {
             guard let last = taps.last else {
@@ -738,8 +741,6 @@ struct OfflineMapView: UIViewRepresentable {
                             bearing: brg, seconds: secs, busy: busy))
         }
 
-        // MARK: المندوب
-
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             let c = mapView.centerCoordinate
             updateArrow()
@@ -817,7 +818,6 @@ struct OfflineMapView: UIViewRepresentable {
         }
 
         func mapView(_ m: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
-            // سهم موقعي بدل النقطة الدائرية
             if annotation is MKUserLocation {
                 let id = "me"
                 let v = m.dequeueReusableAnnotationView(withIdentifier: id)
