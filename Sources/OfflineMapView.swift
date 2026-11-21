@@ -168,9 +168,11 @@ struct OfflineMapView: UIViewRepresentable {
         let key = "\(revision)|\(showPoints)|\(showAreas)|\(showLines)|\(showTracks)|\(editMode)|\(clusterPoints)"
         if c.lastKey != key {
             map.removeOverlays(c.shapeOverlays)
+            map.removeOverlays(c.circleOverlays) // ✅ تنظيف الدوائر
             let old = map.annotations.filter { $0 is PointAnnotation }
             map.removeAnnotations(old)
             c.shapeOverlays = []
+            c.circleOverlays = [] // ✅ تنظيف
             c.styles = [:]
             c.shapeIDs = [:]
 
@@ -208,6 +210,21 @@ struct OfflineMapView: UIViewRepresentable {
             map.addOverlays(polygons, level: .aboveLabels)
             map.addOverlays(lines, level: .aboveLabels)
             c.shapeOverlays = polygons + lines
+
+            // ✅ إضافة دوائر نصف القطر
+            var circles: [MKCircle] = []
+            for p in points where p.radius > 0 && showPoints {
+                let circle = MKCircle(center: p.coordinate, radius: p.radius)
+                c.styles[ObjectIdentifier(circle)] = Coordinator.Style(
+                    color: LDKStyle.color(p.color),
+                    dashed: true,
+                    width: 1.5,
+                    fill: 0.08
+                )
+                circles.append(circle)
+            }
+            map.addOverlays(circles, level: .aboveLabels)
+            c.circleOverlays = circles
 
             if showPoints {
                 var anns: [PointAnnotation] = []
@@ -319,6 +336,7 @@ struct OfflineMapView: UIViewRepresentable {
         var lastOverlay: MKTileOverlay?
         var lastKey = ""
         var shapeOverlays: [MKOverlay] = []
+        var circleOverlays: [MKOverlay] = [] // ✅ جديد
         var styles: [ObjectIdentifier: Style] = [:]
         var pathMode = false
         var followRoads = false
@@ -751,6 +769,23 @@ struct OfflineMapView: UIViewRepresentable {
 
         func mapView(_ m: MKMapView, rendererFor o: MKOverlay) -> MKOverlayRenderer {
             if let t = o as? MKTileOverlay { return MKTileOverlayRenderer(tileOverlay: t) }
+            
+            // ✅ جديد: رسم دائرة نصف القطر
+            if let circle = o as? MKCircle {
+                let r = MKCircleRenderer(circle: circle)
+                if let st = styles[ObjectIdentifier(circle)] {
+                    r.strokeColor = st.color.withAlphaComponent(0.8)
+                    r.fillColor = st.color.withAlphaComponent(st.fill)
+                    r.lineWidth = st.width
+                    if st.dashed { r.lineDashPattern = [6, 4] }
+                } else {
+                    r.strokeColor = UIColor.systemRed
+                    r.fillColor = UIColor.systemRed.withAlphaComponent(0.1)
+                    r.lineWidth = 1.5
+                    r.lineDashPattern = [6, 4]
+                }
+                return r
+            }
 
             if let l = o as? MKPolyline, l === navCasing {
                 let r = MKPolylineRenderer(polyline: l)
