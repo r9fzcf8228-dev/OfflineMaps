@@ -20,7 +20,6 @@ let colorChoices: [ColorChoice] = [
 ]
 
 enum ColorHex {
-    // يحوّل لون SwiftUI إلى نص #AARRGGBB
     static func hex(_ c: Color) -> String {
         let ui = UIColor(c)
         var r: CGFloat = 0
@@ -36,7 +35,6 @@ enum ColorHex {
     }
 }
 
-// اختيار لون: ألوان جاهزة + لون حر من لوحة الألوان
 struct ColorField: View {
     let title: String
     @Binding var value: String
@@ -61,7 +59,7 @@ struct ColorField: View {
 struct PointEditor: View {
     @State private var p: MapPoint
     @State private var coordText: String
-    @State private var mode: Int = 0          // 0 بدون رمز، 1 رمز قياسي، 2 رمز مخصص
+    @State private var mode: Int = 0
     @State private var aff: Affiliation = .friendly
     @State private var type: UnitType = .infantry
     @State private var size: UnitSize = .unsized
@@ -291,7 +289,6 @@ struct GoToSheet: View {
     }
 }
 
-
 struct ShapeEditor: View {
     @State private var s: MapShape
     @Environment(\.dismiss) private var dismiss
@@ -338,10 +335,44 @@ struct ShapeEditor: View {
                     Section("حدّ المنطقة") {
                         Stepper("سمك الحدّ: \(Int(s.lineWidth))", value: $s.lineWidth, in: 1...12, step: 1)
                     }
+                    if s.coords.count >= 3 {
+                        let cs = s.coords
+                        let area = Coords.polygonArea(cs)
+                        let perim = Coords.polygonPerimeter(cs)
+                        Section("القياسات") {
+                            HStack {
+                                Label("المساحة", systemImage: "square.dashed")
+                                Spacer()
+                                Text(Coords.formatArea(area))
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                            HStack {
+                                Label("المحيط", systemImage: "square.dotted")
+                                Spacer()
+                                Text(Coords.formatPerimeter(perim))
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                            }
+                            HStack {
+                                Label("النقاط", systemImage: "circle.dotted")
+                                Spacer()
+                                Text("\(cs.count)")
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
                 } else {
                     Section("الخط") {
                         Stepper("السمك: \(Int(s.lineWidth))", value: $s.lineWidth, in: 1...12, step: 1)
                         Toggle("خط متقطع", isOn: $s.dashed)
+                        HStack {
+                            Label("الطول", systemImage: "ruler")
+                            Spacer()
+                            Text(Coords.formatDistance(Coords.length(s.coords)))
+                                .font(.system(.body, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
 
