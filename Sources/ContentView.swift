@@ -43,6 +43,7 @@ enum ActiveSheet: Identifiable {
     case navTarget
     case offlineMaps
     case export
+    case search // ✅ جديد
     case editPoint(MapPoint, Bool)
     case editShape(MapShape)
 
@@ -53,6 +54,7 @@ enum ActiveSheet: Identifiable {
         case .navTarget: return "navtarget"
         case .offlineMaps: return "offline"
         case .export: return "export"
+        case .search: return "search"
         case .editShape(let sh): return "shape-" + sh.id.uuidString
         case .editPoint(let p, _): return "edit-" + p.id.uuidString
         }
@@ -65,6 +67,7 @@ struct ContentView: View {
     @StateObject private var navigator = Navigator()
     @StateObject private var net = NetworkMonitor()
     @StateObject private var downloader = TileDownloader()
+    @StateObject private var tracker = TrackRecorder() // ✅ جديد
 
     @State private var stage: Stage = .splash
     @State private var overlay: MKTileOverlay?
@@ -93,7 +96,6 @@ struct ContentView: View {
     @State private var showClearConfirm = false
     @State private var copyToast: String? = nil
     
-    // ✅ جديد: حفظ إعداد الرؤية الليلية
     @AppStorage("nightMode") private var nightMode = false
 
     var body: some View {
@@ -136,6 +138,11 @@ struct ContentView: View {
         .onAppear {
             reload()
             loadActiveBase()
+            // ✅ ربط تسجيل المسار بحفظه في قاعدة البيانات
+            tracker.onSave = { name, coords, dist in
+                store.addShape(kind: "track", name: name, color: "magenta", coords: coords)
+                self.say("تم حفظ المسار: \(Coords.formatDistance(dist))")
+            }
         }
     }
 
@@ -202,6 +209,16 @@ struct ContentView: View {
             ExportSheet(points: store.points,
                         shapes: store.shapes,
                         backup: { store.backupData() })
+        case .search: // ✅ شاشة البحث
+            SearchSheet(points: store.points, shapes: store.shapes) { p in
+                controller.goTo(p.coordinate)
+            } onSelectShape: { s in
+                if let f = s.coords.first { controller.goTo(f) }
+            } onGoToCoord: { c in
+                controller.goTo(c)
+            } onAddPoint: { c in
+                newPoint(at: c)
+            }
         case .editShape(let sh):
             ShapeEditor(shape: sh,
                         onSave: { ns in store.updateShape(ns) },
@@ -258,7 +275,6 @@ struct ContentView: View {
                            onEditShape: { id in openShapeEditor(id) })
                 .ignoresSafeArea()
             
-            // ✅ جديد: فلتر الرؤية الليلية
             if nightMode {
                 Color.red.opacity(0.4)
                     .blendMode(.multiply)
@@ -282,6 +298,22 @@ struct ContentView: View {
                 }
                 .allowsHitTesting(false)
                 .transition(.opacity.combined(with: .scale))
+            }
+            // ✅ إشعار تسجيل المسار
+            if tracker.isRecording {
+                VStack {
+                    HStack {
+                        Circle().fill(Color.red).frame(width: 10, height: 10)
+                        Text("جاري التسجيل: \(Coords.formatDistance(tracker.distance))")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .glass(20)
+                    .padding(.top, 100)
+                    Spacer()
+                }
             }
         }
         .overlay(alignment: .top) { topBar }
@@ -332,8 +364,14 @@ struct ContentView: View {
                     if newVal { controller.resetHeading() }
                 }
             ))
-            // ✅ جديد: تفعيل الرؤية الليلية
             Toggle("الرؤية الليلية (NVG)", isOn: $nightMode)
+            Divider()
+            // ✅ أزرار تسجيل المسار
+            if tracker.isRecording {
+                Button("إيقاف وحفظ تسجيل المسار", role: .destructive) { tracker.stop() }
+            } else {
+                Button("تسجيل مسار الحركة (Breadcrumb)") { tracker.start() }
+            }
             Divider()
             Button("الخرائط دون إنترنت") { sheet = .offlineMaps }
             Button("تصدير ومشاركة") { sheet = .export }
@@ -406,6 +444,9 @@ struct ContentView: View {
         VStack(spacing: 8) {
             HStack(spacing: 10) {
                 roundButton("chevron.backward") { goHome() }
+                // ✅ زر البحث الشامل
+                roundButton("magnifyingglass") { sheet = .search }
+                
                 if showCrosshair && !navigator.active, let c = center {
                     hudCapsule(c)
                 }
