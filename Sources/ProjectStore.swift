@@ -10,9 +10,10 @@ struct MapPoint: Identifiable, Codable {
     var color: String
     var symbol: String
     var pinned: Bool
+    var radius: Double // ✅ جديد: نصف القطر بالأمتار
 
     init(id: UUID = UUID(), name: String, note: String = "", lat: Double, lon: Double,
-         color: String = "red", symbol: String = "", pinned: Bool = false) {
+         color: String = "red", symbol: String = "", pinned: Bool = false, radius: Double = 0) {
         self.id = id
         self.name = name
         self.note = note
@@ -21,10 +22,11 @@ struct MapPoint: Identifiable, Codable {
         self.color = color
         self.symbol = symbol
         self.pinned = pinned
+        self.radius = radius
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, note, lat, lon, color, symbol, pinned
+        case id, name, note, lat, lon, color, symbol, pinned, radius
     }
 
     init(from decoder: Decoder) throws {
@@ -37,6 +39,7 @@ struct MapPoint: Identifiable, Codable {
         color = (try? c.decode(String.self, forKey: .color)) ?? "red"
         symbol = (try? c.decode(String.self, forKey: .symbol)) ?? ""
         pinned = (try? c.decode(Bool.self, forKey: .pinned)) ?? false
+        radius = (try? c.decode(Double.self, forKey: .radius)) ?? 0 // ✅ جديد
     }
 
     var coordinate: CLLocationCoordinate2D {
@@ -46,7 +49,7 @@ struct MapPoint: Identifiable, Codable {
 
 struct MapShape: Identifiable, Codable {
     var id: UUID
-    var kind: String      // line, area, track, route
+    var kind: String
     var name: String
     var color: String
     var dashed: Bool
@@ -206,7 +209,6 @@ final class ProjectStore: ObservableObject {
         changed()
     }
 
-    // نسخة احتياطية كاملة (للنقل إلى جهاز آخر عليه التطبيق)
     func backupData() -> Data? {
         let f = FileData(points: points, shapes: shapes, imported: imported)
         let enc = JSONEncoder()
@@ -214,7 +216,6 @@ final class ProjectStore: ObservableObject {
         return try? enc.encode(f)
     }
 
-    // دمج نسخة احتياطية: يضيف ما ليس موجوداً فقط. يعيد (نقاط مضافة، أشكال مضافة)
     func mergeBackup(_ data: Data) -> (Int, Int)? {
         guard let f = try? JSONDecoder().decode(FileData.self, from: data) else { return nil }
         var addedP = 0
