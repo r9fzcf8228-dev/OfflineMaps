@@ -138,7 +138,6 @@ struct PointEditor: View {
                     ColorField(title: "لون العلامة", value: $p.color)
                 }
                 
-                // ✅ جديد: دائرة نصف القطر (مدى السلاح)
                 Section("مدى السلاح / دائرة المسافة") {
                     Stepper("نصف القطر: \(Int(p.radius)) متر", value: $p.radius, in: 0...50000, step: 100)
                     if p.radius > 0 {
@@ -293,6 +292,114 @@ struct GoToSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("إلغاء") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+// ✅ جديد: شاشة البحث الشامل
+struct SearchSheet: View {
+    let points: [MapPoint]
+    let shapes: [MapShape]
+    let onSelectPoint: (MapPoint) -> Void
+    let onSelectShape: (MapShape) -> Void
+    let onGoToCoord: (CLLocationCoordinate2D) -> Void
+    let onAddPoint: (CLLocationCoordinate2D) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    private var parsedCoord: CLLocationCoordinate2D? {
+        Coords.parse(query)
+    }
+
+    private var filteredPoints: [MapPoint] {
+        if query.isEmpty { return Array(points.prefix(20)) }
+        return points.filter {
+            $0.name.localizedCaseInsensitiveContains(query) ||
+            $0.note.localizedCaseInsensitiveContains(query) ||
+            Coords.mgrsString($0.coordinate).localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private var filteredShapes: [MapShape] {
+        if query.isEmpty { return [] }
+        return shapes.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("البحث (اسم، ملاحظة، أو إحداثيات)") {
+                    TextField("ابحث هنا...", text: $query)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+
+                if let c = parsedCoord {
+                    Section("إحداثيات مطابقة") {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("UTM  " + Coords.utmString(c))
+                            Text("MGRS " + Coords.mgrsString(c))
+                            Text(Coords.ddString(c))
+                        }
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        
+                        Button("الانتقال إلى الموقع") {
+                            onGoToCoord(c)
+                            dismiss()
+                        }
+                        Button("إضافة كنقطة جديدة") {
+                            onAddPoint(c)
+                            dismiss()
+                        }
+                    }
+                }
+
+                if !filteredShapes.isEmpty {
+                    Section("المناطق والخطوط") {
+                        ForEach(filteredShapes) { s in
+                            Button {
+                                onSelectShape(s)
+                                dismiss()
+                            } label: {
+                                HStack {
+                                    Image(systemName: s.kind == "area" ? "square.dashed" : "line.diagonal")
+                                    Text(s.name.isEmpty ? "بدون اسم" : s.name)
+                                    Spacer()
+                                    Text(s.kind.uppercased()).font(.caption)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Section("النقاط (\(filteredPoints.count))") {
+                    ForEach(filteredPoints) { p in
+                        Button {
+                            onSelectPoint(p)
+                            dismiss()
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(p.name.isEmpty ? "بدون اسم" : p.name)
+                                    Text(Coords.mgrsString(p.coordinate))
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("البحث الشامل")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("إغلاق") { dismiss() }
                 }
             }
         }
